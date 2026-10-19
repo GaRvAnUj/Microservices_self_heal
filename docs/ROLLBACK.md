@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `dae8901`: S3: Implement configurable service-app and verify 6-node topology with end-to-end /work aggregation
+- `e98afe7`: S4: Implement Healer core components (ServiceManager, LoadGenerator, Collector, baseline profiling, ChaosRegistry, and H2 database)
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
