@@ -46,3 +46,15 @@ Chosen: Option 3.
 Why: Matches the real-world microservice contract defined in the system specification. Demonstrates fault tolerance and graceful degradation under chaos.
 Trade-off: Callers must inspect the `degraded` flag in responses.
 Revisit if: Topology requirements change.
+
+## D-005: Healer Core Architecture, Baseline Profiling, and SLO Tracking
+Date: 2026-10-19   Model: Gemini 2.5 Pro / pair-engineer
+Context: Designing Healer control plane (port 8080) under strict low-overhead constraints without external message brokers.
+Options:
+1. External metrics store (Prometheus / InfluxDB) and external load test tool (JMeter / k6).
+2. Heavy Spring Batch / Quartz scheduling.
+3. In-process scheduled executors, rolling sliding-window statistical estimators, and embedded H2 file database.
+Chosen: Option 3.
+Why: Runs completely within single JVM process, zero external dependencies, fits inside Windows 8 GB RAM environment, offline capable.
+Trade-off: Rolling windows and baseline profiles are stored in-memory with H2 checkpointing rather than distributed timeseries stores.
+Revisit if: Multi-node distributed deployment is required.
