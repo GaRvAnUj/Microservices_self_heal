@@ -58,3 +58,15 @@ Chosen: Option 3.
 Why: Runs completely within single JVM process, zero external dependencies, fits inside Windows 8 GB RAM environment, offline capable.
 Trade-off: Rolling windows and baseline profiles are stored in-memory with H2 checkpointing rather than distributed timeseries stores.
 Revisit if: Multi-node distributed deployment is required.
+
+## D-006: Anomaly Detection, Link Disambiguation (N1), and Fault-Type Healing (N2, N3)
+Date: 2026-10-19   Model: Gemini 3.8 Flash (Medium) / pair-engineer
+Context: Implementing closed-loop healing engine comparing traditional Baseline mode against Proposed mode with link-level diagnosis and failure attribution.
+Options:
+1. Hardcoded static if-else decision trees with no persistence or learning.
+2. Heavy reinforcement learning framework (TensorFlow/PyTorch) requiring GPU.
+3. Lightweight Q-policy matrix in H2 with link vs node disambiguation, zero-downtime policy adjustments, and N3 attribution verification window.
+Chosen: Option 3.
+Why: Adheres strictly to the 8 GB RAM / no GPU constraint while faithfully implementing N1, N2, and N3 mechanisms.
+Trade-off: Statistical localizer serves as baseline approximation when external Python FastAPI model is not running.
+Revisit if: Offline model training requires deep learning inference engine.
