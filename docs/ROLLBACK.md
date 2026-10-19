@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `HEAD`: Initial project setup and documentation suite.
+- `7e442bd`: S1: Initialize project skeleton, Maven multi-module configuration, start/stop scripts, and documentation
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
