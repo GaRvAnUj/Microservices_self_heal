@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `7e442bd`: S1: Initialize project skeleton, Maven multi-module configuration, start/stop scripts, and documentation
+- `8141896`: S2: Implement common-lib with EdgePolicy, LinkClient, ChaosRegistryCache, and Telemetry
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
