@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `e98afe7`: S4: Implement Healer core components (ServiceManager, LoadGenerator, Collector, baseline profiling, ChaosRegistry, and H2 database)
+- `d1cdefc`: S5: Implement Anomaly Detector, DiagnosisClient, StatisticalLocalizer (N1), PolicyService, and HealingEngine (N2, N3)
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
