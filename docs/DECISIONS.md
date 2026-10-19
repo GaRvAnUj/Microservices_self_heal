@@ -34,3 +34,15 @@ Chosen: Option 3.
 Why: Satisfies the hard invariant that link faults do NOT reside in the caller's process memory, meaning restarting a caller JVM does not clear a link fault. Node faults remain strictly in-process and clear upon restart.
 Trade-off: Up to 1-second propagation delay between Healer injecting a link fault and the caller adopting it.
 Revisit if: Sub-millisecond fault injection precision is demanded.
+
+## D-004: Critical vs Non-Critical Microservice Workload Handling
+Date: 2026-10-19   Model: Gemini 2.5 Pro / pair-engineer
+Context: Microservices calling downstream services need clear error contracts for partial failures vs fatal failures.
+Options:
+1. Fail hard (HTTP 500) if any downstream fails.
+2. Ignore all failures and return partial data for everything.
+3. Classify `post-storage` as critical (failure yields HTTP 500) and `text`, `media`, `user` as non-critical (fail-fast, set `degraded: true`, return partial data).
+Chosen: Option 3.
+Why: Matches the real-world microservice contract defined in the system specification. Demonstrates fault tolerance and graceful degradation under chaos.
+Trade-off: Callers must inspect the `degraded` flag in responses.
+Revisit if: Topology requirements change.

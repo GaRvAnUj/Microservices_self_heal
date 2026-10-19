@@ -4,7 +4,7 @@ echo Starting Self-Healing Microservices Platform (Windows, -Xmx128m)
 echo ========================================================
 
 call "%~dp0stop-all.bat"
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 3 >nul
 
 set ROOT_DIR=%~dp0..
 set SVC_JAR=%ROOT_DIR%\service-app\target\service-app.jar
@@ -26,17 +26,17 @@ start "media-8084" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=media --server.p
 start "user-8085" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=user --server.port=8085
 start "post-storage-8086" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=post-storage --server.port=8086
 
-timeout /t 3 /nobreak >nul
+ping 127.0.0.1 -n 6 >nul
 
 echo Starting compose-post...
 start "compose-post-8082" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=compose-post --server.port=8082 --svc.downstream="text:8083,media:8084,user:8085,post-storage:8086"
 
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 4 >nul
 
 echo Starting gateway...
 start "gateway-8081" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=gateway --server.port=8081 --svc.downstream="compose-post:8082"
 
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 4 >nul
 
 echo Starting Healer controller & dashboard...
 start "healer-8080" /B java -Xmx256m -jar "%HEALER_JAR%" --server.port=8080
