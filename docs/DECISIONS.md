@@ -22,3 +22,15 @@ Chosen: Option 2.
 Why: Satisfies the zero-CDN constraint, minimizes footprint, requires no node build pipeline for the healer, and allows tight compliance with `design.md` styling tokens.
 Trade-off: Component templating is done via standard JS/DOM instead of a React JSX compiler.
 Revisit if: UI complexity grows beyond a single-page monitoring dashboard.
+
+## D-003: Link Fault Distribution and In-Process Policy Enforcement
+Date: 2026-10-19   Model: Gemini 2.5 Pro / pair-engineer
+Context: Microservices must enforce link-level delays and drops dynamically, and policies must survive or reset according to domain invariants.
+Options:
+1. Store link faults locally in caller JVM memory.
+2. Intercept at OS network layer (e.g. iptables/tc or Windows netsh/wfp).
+3. Poll centralized Healer Chaos Registry (`/chaos/registry`) periodically (1s) and evaluate in `LinkClient`.
+Chosen: Option 3.
+Why: Satisfies the hard invariant that link faults do NOT reside in the caller's process memory, meaning restarting a caller JVM does not clear a link fault. Node faults remain strictly in-process and clear upon restart.
+Trade-off: Up to 1-second propagation delay between Healer injecting a link fault and the caller adopting it.
+Revisit if: Sub-millisecond fault injection precision is demanded.
