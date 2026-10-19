@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `8141896`: S2: Implement common-lib with EdgePolicy, LinkClient, ChaosRegistryCache, and Telemetry
+- `dae8901`: S3: Implement configurable service-app and verify 6-node topology with end-to-end /work aggregation
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
