@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `d9a9ec0`: S6: Implement Healer Dashboard UI, SSE stream (/api/stream), and offline canvas topology/charts
+- `3f9d1f4`: S7: Implement Python diagnosis-service (FastAPI, Port 5000) with N1 disambiguation and startup integration
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
