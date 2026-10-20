@@ -60,8 +60,11 @@ public class TopologyEndToEndTest {
                         .build();
                 HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
                 if (resp.statusCode() == 200) {
-                    gatewayUp = true;
-                    break;
+                    JsonNode root = mapper.readTree(resp.body());
+                    if (!root.path("degraded").asBoolean(true)) {
+                        gatewayUp = true;
+                        break;
+                    }
                 }
             } catch (Exception ignored) {}
             Thread.sleep(1000);

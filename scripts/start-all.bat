@@ -38,10 +38,16 @@ start "gateway-8081" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=gateway --serv
 
 ping 127.0.0.1 -n 4 >nul
 
+echo Starting Python diagnosis-service (port 5000)...
+start "diagnosis-service-5000" /B python -m uvicorn main:app --app-dir "%ROOT_DIR%\diagnosis-service" --host 127.0.0.1 --port 5000
+
+ping 127.0.0.1 -n 3 >nul
+
 echo Starting Healer controller & dashboard...
 start "healer-8080" /B java -Xmx256m -jar "%HEALER_JAR%" --server.port=8080
 
 echo ========================================================
 echo All processes initiated. Healer dashboard: http://localhost:8080
 echo Gateway endpoint: http://localhost:8081/work
+echo Diagnosis service: http://localhost:5000/health
 echo ========================================================

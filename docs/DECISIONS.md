@@ -82,3 +82,15 @@ Chosen: Option 3.
 Why: 100% offline, zero external downloads or network calls, zero bundle bloat, instantly responsive, perfectly styled to #004FCB design tokens.
 Trade-off: Bespoke canvas rendering rather than full third-party charting suite.
 Revisit if: Advanced multi-axis chart features or manual physics simulation are needed.
+
+## D-008: Standalone Python FastAPI Diagnosis Service (Port 5000)
+Date: 2026-10-20   Model: Gemini 3.8 Flash (Medium) / pair-engineer
+Context: Providing machine learning / probabilistic fault localization engine decoupled from the Java runtime.
+Options:
+1. In-process Java JNI / Jython binding.
+2. Heavy gRPC / Protobuf RPC service.
+3. Lightweight Python FastAPI microservice over HTTP localhost with 1-second timeout and JSON contracts.
+Chosen: Option 3.
+Why: Clean microservice separation, zero C-compiler/JNI compilation complexities, enables Python ML ecosystem (scipy, numpy, PyTorch) while maintaining fallback resilience in Java Healer.
+Trade-off: HTTP loopback overhead (~2-5ms) across localhost port 5000.
+Revisit if: Ultra-low latency microsecond inference is required.
