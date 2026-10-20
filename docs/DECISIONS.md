@@ -70,3 +70,15 @@ Chosen: Option 3.
 Why: Adheres strictly to the 8 GB RAM / no GPU constraint while faithfully implementing N1, N2, and N3 mechanisms.
 Trade-off: Statistical localizer serves as baseline approximation when external Python FastAPI model is not running.
 Revisit if: Offline model training requires deep learning inference engine.
+
+## D-007: Offline Dashboard Visualization (Self-Contained Canvas & SVG Renderers)
+Date: 2026-10-20   Model: Gemini 3.8 Flash (Medium) / pair-engineer
+Context: Providing real-time topology map and metric timeseries charts while strictly complying with offline constraints (no CDNs, no external downloads).
+Options:
+1. External network download of large minified vis-network and Chart.js bundles.
+2. Static text/table display with no graphical rendering.
+3. Lightweight, self-contained interactive Canvas and SVG renderers custom-built for the Indeed Minimal design system.
+Chosen: Option 3.
+Why: 100% offline, zero external downloads or network calls, zero bundle bloat, instantly responsive, perfectly styled to #004FCB design tokens.
+Trade-off: Bespoke canvas rendering rather than full third-party charting suite.
+Revisit if: Advanced multi-axis chart features or manual physics simulation are needed.

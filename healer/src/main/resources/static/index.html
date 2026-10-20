@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Self-Healing Microservices Platform | Control Plane</title>
+  <meta name="description" content="Automated resilience, link-level fault diagnosis (N1), fault-type-driven healing (N2), and recovery attribution (N3) control plane.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="header-bar">
+    <div class="brand-section">
+      <div class="brand-logo">Self-Healing Microservices</div>
+      <span class="brand-badge">CONTROL PLANE</span>
+    </div>
+
+    <div class="header-controls">
+      <div class="connection-status">
+        <span class="status-dot disconnected" id="connectionDot"></span>
+        <span id="connectionText">Connecting...</span>
+      </div>
+
+      <div class="mode-toggle-group">
+        <button id="btnModeProposed" class="mode-btn active" onclick="setMode('PROPOSED')">PROPOSED (N1-N3)</button>
+        <button id="btnModeBaseline" class="mode-btn" onclick="setMode('BASELINE')">BASELINE</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Dashboard Container -->
+  <main class="dashboard-container">
+
+    <!-- KPI Summary Cards -->
+    <section class="kpi-row">
+      <div class="card">
+        <div class="kpi-title">Overall System Status</div>
+        <div class="kpi-value" style="font-size: 20px; margin-top: 8px;">
+          <span id="sloBadge" class="badge badge-success">SLO HEALTHY</span>
+        </div>
+        <div class="kpi-sub">Target: p95 &lt; 400ms &amp; Err &lt; 3%</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-title">Latency (p95)</div>
+        <div class="kpi-value" id="kpiP95">-- ms</div>
+        <div class="kpi-sub">Rolling 10s Window (SLO limit 400ms)</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-title">Error Rate</div>
+        <div class="kpi-value" id="kpiErrorRate">-- %</div>
+        <div class="kpi-sub">Rolling 10s Window (SLO limit 3%)</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-title">Synthetic Throughput</div>
+        <div class="kpi-value" id="kpiThroughput">-- req/s</div>
+        <div class="kpi-sub">LoadGenerator on gateway:8081</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-title">Active Incident</div>
+        <div class="kpi-value" style="font-size: 18px; margin-top: 8px;">
+          <span id="incidentBadge" class="badge badge-success">NO INCIDENT</span>
+        </div>
+        <div class="kpi-sub">Automated healing active</div>
+      </div>
+    </section>
+
+    <!-- Main Grid: Topology & Charts -->
+    <section class="grid-2col">
+
+      <!-- Left Column: Topology & Chaos -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+
+        <!-- Topology Map Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Microservice Topology &amp; Link Health</span>
+            <span style="font-size: 12px; color: var(--text-secondary);">6 Nodes • Port 8081-8086</span>
+          </div>
+
+          <div class="topology-container">
+            <canvas id="topologyCanvas"></canvas>
+          </div>
+
+          <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-secondary);">
+            <span>● Green: UP &nbsp; ● Orange: RESTARTING &nbsp; ● Red: DOWN &nbsp; ╌ Red Dashed: Link Chaos</span>
+            <span>Critical Leaf: <b>post-storage</b></span>
+          </div>
+        </div>
+
+        <!-- Chaos Injection Control Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Chaos Experimentation Panel</span>
+            <button class="btn btn-outline" style="height: 28px; padding: 0 10px; font-size: 11px;" onclick="clearAllChaos()">Clear All Chaos</button>
+          </div>
+
+          <div class="chaos-form-row">
+            <div class="form-group">
+              <label class="form-label" for="chaosType">Fault Type</label>
+              <select id="chaosType" class="form-select">
+                <option value="link_delay">Link Delay (N1/N2)</option>
+                <option value="link_loss">Link Loss % (N1/N2)</option>
+                <option value="cpu_hog">Node CPU Hog</option>
+                <option value="crash">Node Crash</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="chaosTarget">Target Component</label>
+              <select id="chaosTarget" class="form-select">
+                <option value="text">text (8083)</option>
+                <option value="media">media (8084)</option>
+                <option value="user">user (8085)</option>
+                <option value="post-storage">post-storage (8086) [CRIT]</option>
+                <option value="compose-post">compose-post (8082)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="chaosDelay">Delay (ms)</label>
+              <input type="number" id="chaosDelay" class="form-input" value="1200" step="100" min="0">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="chaosLoss">Loss (%)</label>
+              <input type="number" id="chaosLoss" class="form-input" value="25" step="5" min="0" max="100">
+            </div>
+
+            <button class="btn btn-primary" onclick="injectChaos()">Inject Fault</button>
+          </div>
+
+          <div style="margin-top: 14px;">
+            <div style="font-size: 11px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px;">ACTIVE IMPAIRMENTS:</div>
+            <div id="activeChaosList">
+              <span style="font-size: 12px; color: var(--text-secondary);">No active link faults injected.</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right Column: Metrics & Incident Timeline -->
+      <div style="display: flex; flex-direction: column; gap: 20px;">
+
+        <!-- Real-Time Charts Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Real-Time SLO Telemetry (Rolling 60s)</span>
+            <span style="font-size: 11px; color: var(--text-secondary);">Dashed Red: SLO Boundary</span>
+          </div>
+
+          <div style="font-size: 11px; font-weight: 700; color: var(--text-secondary); margin-bottom: 4px;">p95 Latency (ms)</div>
+          <div class="chart-container">
+            <canvas id="latencyChartCanvas" class="chart-canvas"></canvas>
+          </div>
+
+          <div style="font-size: 11px; font-weight: 700; color: var(--text-secondary); margin-bottom: 4px;">Request Error Rate (%)</div>
+          <div class="chart-container">
+            <canvas id="errorChartCanvas" class="chart-canvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Incident & Attribution Feed Card -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Incident Lifecycle &amp; N3 Attribution</span>
+            <span style="font-size: 11px; color: var(--text-secondary);">Automated closed-loop</span>
+          </div>
+
+          <div class="incident-feed" id="incidentFeed">
+            <div style="padding: 16px; text-align: center; color: var(--text-secondary); font-size: 12px;">
+              Waiting for live telemetry stream...
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+    <!-- Bottom Row: Q-Policy Matrix -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <span class="card-title">Q-Policy Matrix (Reinforcement Learning)</span>
+          <span style="font-size: 12px; color: var(--text-secondary); margin-left: 8px;">Fault-Type Action Selection &amp; N3 Selective Updates</span>
+        </div>
+        <span class="badge badge-info">Embedded H2 Persistence</span>
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Fault Classification</th>
+            <th>Remediation Action</th>
+            <th>Q-Value (Confidence)</th>
+            <th>Update Count</th>
+          </tr>
+        </thead>
+        <tbody id="qPolicyBody">
+          <tr><td colspan="4" style="text-align: center;">Loading Q-policy data...</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
