@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `3f9d1f4`: S7: Implement Python diagnosis-service (FastAPI, Port 5000) with N1 disambiguation and startup integration
+- `ba4f978`: S8: Implement EndToEndResilienceBenchmarkTest (N1, N2, N3), complete DEFENSE.md, and finalize platform
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
