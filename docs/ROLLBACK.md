@@ -1,7 +1,7 @@
 # ROLLBACK: Safe Reversion and Recovery
 
 ## Last Known Good Git Commit
-- `d1cdefc`: S5: Implement Anomaly Detector, DiagnosisClient, StatisticalLocalizer (N1), PolicyService, and HealingEngine (N2, N3)
+- `d9a9ec0`: S6: Implement Healer Dashboard UI, SSE stream (/api/stream), and offline canvas topology/charts
 
 ## Reversion Checklist
 1. Stop all active background Java processes using `scripts/stop-all.bat` or:
