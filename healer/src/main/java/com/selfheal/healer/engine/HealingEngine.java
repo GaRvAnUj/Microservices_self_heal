@@ -342,9 +342,17 @@ public class HealingEngine {
     private double computeComponentZ(String component, Map<String, Double> zScores) {
         if (component == null || zScores == null) return 0.0;
         double max = 0.0;
+        boolean isLink = component.contains("->");
         for (Map.Entry<String, Double> entry : zScores.entrySet()) {
-            if (entry.getKey().contains(component)) {
-                max = Math.max(max, entry.getValue());
+            String key = entry.getKey();
+            if (isLink) {
+                if (key.startsWith("link:" + component + ":")) {
+                    max = Math.max(max, entry.getValue());
+                }
+            } else {
+                if (key.startsWith("node:" + component + ":") || key.startsWith("log:" + component + ":")) {
+                    max = Math.max(max, entry.getValue());
+                }
             }
         }
         return max;
@@ -358,8 +366,16 @@ public class HealingEngine {
     private double findMaxZScoreExcluding(String target, Map<String, Double> zScores) {
         if (zScores == null || zScores.isEmpty()) return 0.0;
         double max = 0.0;
+        boolean isLink = target != null && target.contains("->");
         for (Map.Entry<String, Double> entry : zScores.entrySet()) {
-            if (target != null && !entry.getKey().contains(target)) {
+            String key = entry.getKey();
+            boolean matchesTarget;
+            if (isLink) {
+                matchesTarget = key.startsWith("link:" + target + ":");
+            } else {
+                matchesTarget = key.startsWith("node:" + target + ":") || key.startsWith("log:" + target + ":");
+            }
+            if (!matchesTarget) {
                 max = Math.max(max, entry.getValue());
             }
         }

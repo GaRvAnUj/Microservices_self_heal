@@ -1,62 +1,60 @@
-# RESTART CONTEXT FOR NEXT AGENT
+# PROJECT STATUS & RESTART GUIDE
 
-> **Status**: Steps 1 to 7 are **100% Complete & Verified**.  
-> **Last Commit**: `ab2033d` on branch `master`.  
-> **Remaining Work**: **Step 8 Only** (End-to-End Validation & Final Defense Document).
-
----
-
-## 1. Environment & Executable Paths
-- **Operating System**: Windows (use `cmd.exe /c` or PowerShell `&`).
-- **Java**: JDK 21 at `C:\Program Files\Java\jdk-21.0.12`.
-- **Maven**: `C:\Users\Administrator\.maven\maven-3.10.0-rc-1\bin\mvn.cmd` *(mvn is not in default PATH)*.
-- **Python**: Python 3.14 (pre-installed packages: `fastapi`, `uvicorn`, `pydantic`, `pytest`, `requests`).
-- **All Tests Green**:
-  - Java (38 tests): `& "C:\Users\Administrator\.maven\maven-3.10.0-rc-1\bin\mvn.cmd" test`
-  - Python (6 tests): `python -m pytest diagnosis-service/test_diagnosis.py`
+> **Status**: **100% COMPLETE & VERIFIED** across all 8 development phases.  
+> **Repository Branch**: `master`.  
+> **All Tests Passing**: 41 Java tests (`mvn test`), 6 Python tests (`pytest`).  
+> **Jars Packaged**: `service-app/target/service-app.jar` and `healer/target/healer.jar`.
 
 ---
 
-## 2. Completed Architecture (Steps 1–7)
-1. **`common-lib`**: `EdgePolicy`, `LinkClient`, `ChaosRegistryCache`, `NodeMetricsCollector`, `LogEventTracker`, `CommonChaosController`.
-2. **`service-app`**: Configurable single-jar microservice tree (`gateway:8081` $\to$ `compose-post:8082` $\to$ `text:8083`, `media:8084`, `user:8085`, `post-storage:8086 [CRIT]`).
-3. **`healer` (Port 8080)**:
-   - `ServiceManager`: Process management (`-Xmx128m` limit), restart, uptime/downtime.
-   - `LoadGenerator`: 7 req/s synthetic traffic to gateway; SLO: $p95 < 400\text{ ms}$ & $\text{errorRate} < 3\%$.
-   - `TelemetryCollectorService` & `BaselineProfileManager`: 3s sliding window, z-scores.
-   - `ChaosRegistry` & `ChaosRegistryController`: Central link impairments store.
-   - `DatabaseInitializer`: Embedded H2 (`./data/healerdb`), tables: `incidents`, `incident_actions`, `q_policy`, `labelled_samples`.
-   - `HealingEngine` & `PolicyService`: Closed-loop remediation with dual modes (**BASELINE** vs **PROPOSED**), **N1** disambiguation, **N2** fault-type action dispatch, **N3** recovery-failure attribution (`WRONG_TARGET`, `INEFFECTIVE_ACTION`, `INCONCLUSIVE`).
-   - `DashboardApiController`: SSE streaming (`/api/stream`), REST controls (`/api/status`, `/api/mode`, `/api/chaos/inject`, `/api/chaos/clear`).
-   - Static Dashboard UI (`healer/src/main/resources/static/`): 100% offline, zero-CDN, Indeed Minimal design tokens (#004FCB), HTML5 Canvas topology graph, real-time sliding charts.
-4. **`diagnosis-service` (Port 5000)**: Python FastAPI service (`main.py`) exposing `POST /diagnose` and `GET /health`.
-5. **Scripts**: `scripts/start-all.bat` and `scripts/stop-all.bat` (manages ports 8080-8086, 5000).
+## 1. Quick Verification Commands
+```powershell
+# Run full Java multi-module tests (41 tests)
+& "C:\Users\Administrator\.maven\maven-3.10.0-rc-1\bin\mvn.cmd" test
+
+# Run Python FastAPI tests (6 tests)
+python -m pytest diagnosis-service/test_diagnosis.py
+```
 
 ---
 
-## 3. What To Do in Step 8 (Next Tasks)
-1. **End-to-End Validation**:
-   - Run/verify the end-to-end resilience lifecycle:
-     - Link delay fault on `compose-post -> text` $\to$ **N1** classifies link fault $\to$ **N2** tunes link policy via `PUT` with zero downtime $\to$ SLO recovers without restarting `compose-post`.
-     - Node CPU hog on `text` $\to$ classifies node fault $\to$ process restart.
-     - Recovery-failure attribution $\to$ verify `INEFFECTIVE_ACTION` lowers Q-score and `WRONG_TARGET` shifts suspects.
-2. **Final Defense Documentation**:
-   - Expand and complete `docs/defense/DEFENSE.md` addressing all 7 defense sections:
-     - *How it works (sketch the flow)*
-     - *Key decisions and why X over Y*
-     - *Data structures and why*
-     - *How a malicious actor could abuse it*
-     - *Where it fails and how we notice*
-     - *What I would change with more time*
-3. **Commit & Wrap up**:
-   - Update `docs/HANDOVER.md` and `docs/ROLLBACK.md`.
-   - Commit cleanly to Git (local only, do not remote push).
+## 2. Running the Complete Platform
+To start all 6 microservices, Python diagnosis service, and Healer control plane:
+```cmd
+cmd.exe /c scripts\start-all.bat
+```
+
+To stop all services cleanly (ports 8080–8086, 5000):
+```cmd
+cmd.exe /c scripts\stop-all.bat
+```
+
+### Endpoints
+- **Healer Real-Time Dashboard**: [http://localhost:8080](http://localhost:8080)
+- **Gateway Workload**: [http://localhost:8081/work](http://localhost:8081/work)
+- **Python Diagnosis Health**: [http://localhost:5000/health](http://localhost:5000/health)
 
 ---
 
-## 4. Key Rules to Remember
-- **Do NOT** make remote git pushes (local commits only).
-- **Do NOT** add new external dependencies without pausing/asking.
-- **Do NOT** make external network calls (system runs 100% offline).
-- Management endpoints must bind to `127.0.0.1` only.
-- Stop processes before/after full runs via: `cmd.exe /c scripts\stop-all.bat`.
+## 3. Project Architecture Summary
+- **6 Microservices (`service-app.jar`)**:
+  - `gateway (8081)` $\to$ `compose-post (8082)` $\to$ `text (8083)`, `media (8084)`, `user (8085)`, `post-storage (8086) [CRITICAL]`.
+  - Configurable downstream links with fail-fast non-critical degradation and critical downstream HTTP 500 triggering.
+- **Resilience Library (`common-lib.jar`)**:
+  - `EdgePolicy` (dynamic timeout, retry budget, circuit breaking).
+  - `LinkClient` (active chaos interceptor, latency stats, error counters).
+  - Telemetry endpoints (`GET /internal/telemetry`).
+- **Control Plane (`healer.jar`, port 8080)**:
+  - `ServiceManager`: Native Windows `ProcessBuilder` with `-Xmx128m` limit and uptime/downtime tracking.
+  - `LoadGenerator`: Synthetic 7 req/s workload on `gateway:8081`; SLO evaluated ($p95 < 400\text{ ms}$ & $\text{errorRate} < 3\%$).
+  - `Collector` & `BaselineProfileManager`: Rolling 3-window sliding estimator (9s smoothing) with statistical z-score triggers.
+  - `ChaosRegistry`: In-memory link fault store polled by microservices every 1s.
+  - `HealingEngine` & `PolicyService`: Dual modes (**BASELINE** vs **PROPOSED**).
+    - **N1**: Link vs node disambiguation.
+    - **N2**: Fault-type driven action dispatch (`tune_link` zero-downtime policy update vs node process restart).
+    - **N3**: Recovery-failure attribution (`SUCCESS`, `WRONG_TARGET`, `INEFFECTIVE_ACTION`, `INCONCLUSIVE`) with reinforcement learning Q-policy updates stored in embedded H2 (`./data/healerdb`).
+  - `Dashboard UI`: Indeed Minimal design system (#004FCB), SSE streaming (`/api/stream`), offline canvas topology map, and real-time sliding metric charts.
+- **Python Diagnosis Service (`diagnosis-service`, port 5000)**:
+  - FastAPI service providing probabilistic root-cause diagnosis.
+- **Defense Documentation**:
+  - Comprehensive architectural defense in `docs/defense/DEFENSE.md`.
