@@ -8,13 +8,19 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, Any
 import math
+import logging
+from functools import lru_cache
 import uvicorn
 
 app = FastAPI(title="Self-Healing Microservices Diagnosis Service", version="1.0.0")
+log = logging.getLogger(__name__)
+
+SERVICE_NAMES = ("gateway", "compose-post", "text", "media", "user", "post-storage")
 
 class DiagnoseRequest(BaseModel):
     zScores: Dict[str, float] = Field(default_factory=dict)
     signals: Dict[str, float] = Field(default_factory=dict)
+    allowLinkDiagnosis: bool = True
 
 class DiagnoseResponse(BaseModel):
     anomalyDetected: bool
@@ -25,6 +31,113 @@ class DiagnoseResponse(BaseModel):
     diagnosisSource: str = "PYTHON_FASTAPI"
     nodeProbabilities: Dict[str, float] = Field(default_factory=dict)
     linkProbabilities: Dict[str, float] = Field(default_factory=dict)
+
+
+@lru_cache(maxsize=1)
+def _get_inferencer():
+    from modify_inferencer import ModifyInferencer
+
+    return ModifyInferencer()
+
+
+def _find_link_fault(z_scores: Dict[str, float]) -> Optional[DiagnoseResponse]:
+    links: Dict[str, tuple[float, float]] = {}
+    node_scores: Dict[str, float] = {}
+    for key, score in z_scores.items():
+        if key.startswith("link:") and "->" in key:
+            try:
+                separator = key.index(":", 5)
+            except ValueError:
+                continue
+            link = key[5:separator]
+            metric = key[separator + 1:]
+            latency, errors = links.get(link, (0.0, 0.0))
+            if metric == "avg_latency":
+                latency = max(latency, score)
+            elif metric == "error_rate":
+                errors = max(errors, score)
+            links[link] = (latency, errors)
+        elif key.startswith("node:") or key.startswith("log:"):
+            parts = key.split(":")
+            if len(parts) >= 3:
+                node_scores[parts[1]] = max(node_scores.get(parts[1], 0.0), score)
+
+    candidates = [
+        (max(latency, errors), link, latency >= errors)
+        for link, (latency, errors) in links.items()
+    ]
+    if not candidates:
+        return None
+    score, link, is_delay = max(candidates)
+    if score < 4.0:
+        return None
+
+    callee = link.split("->", 1)[1].strip()
+    if node_scores.get(callee, 0.0) >= 3.0:
+        return None
+    return DiagnoseResponse(
+        anomalyDetected=True,
+        targetEntity=link,
+        faultType="link_delay" if is_delay else "link_loss",
+        isLinkFault=True,
+        confidence=min(0.99, max(0.80, score / 10.0)),
+        diagnosisSource="PYTHON_FASTAPI",
+        linkProbabilities={link: 1.0},
+    )
+
+
+def _infer_link_fault_type(z_scores: Dict[str, float]) -> Optional[str]:
+    max_latency = max(
+        (score for key, score in z_scores.items() if key.startswith("link:") and key.endswith(":avg_latency")),
+        default=0.0,
+    )
+    max_errors = max(
+        (score for key, score in z_scores.items() if key.startswith("link:") and key.endswith(":error_rate")),
+        default=0.0,
+    )
+    if max(max_latency, max_errors) < 4.0:
+        return None
+    return "link_delay" if max_latency >= max_errors else "link_loss"
+
+
+def _diagnose_with_modify(
+    z_scores: Dict[str, float], signals: Dict[str, float], allow_link_diagnosis: bool
+) -> DiagnoseResponse:
+    try:
+        prediction = _get_inferencer().diagnose(signals)
+    except Exception as exc:
+        log.exception("MODIFy inference is unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail=f"MODIFy inference is unavailable: {exc}",
+        ) from exc
+
+    target = prediction["targetEntity"]
+    fault_type = _infer_link_fault_type(z_scores) if not allow_link_diagnosis else None
+    if prediction["anomalyDetected"] and target:
+        if fault_type is None:
+            cpu_z = z_scores.get(f"node:{target}:cpu_process", 0.0)
+            log_z = max(
+                (
+                    value
+                    for key, value in z_scores.items()
+                    if key.startswith(f"log:{target}:")
+                ),
+                default=0.0,
+            )
+            fault_type = "cpu_hog" if cpu_z >= 3.0 and cpu_z >= log_z else "crash"
+
+    return DiagnoseResponse(
+        anomalyDetected=prediction["anomalyDetected"],
+        targetEntity=target,
+        faultType=fault_type,
+        isLinkFault=False,
+        confidence=prediction["confidence"],
+        diagnosisSource=prediction["diagnosisSource"],
+        nodeProbabilities=prediction["nodeProbabilities"],
+        linkProbabilities=prediction["linkProbabilities"],
+    )
+
 
 @app.get("/health")
 def health() -> Dict[str, str]:
@@ -37,6 +150,14 @@ def root() -> Dict[str, str]:
 @app.post("/diagnose", response_model=DiagnoseResponse)
 def diagnose(req: DiagnoseRequest) -> DiagnoseResponse:
     z_scores = req.zScores or {}
+    signals = req.signals or {}
+    if signals:
+        if req.allowLinkDiagnosis:
+            link_fault = _find_link_fault(z_scores)
+            if link_fault is not None:
+                return link_fault
+        return _diagnose_with_modify(z_scores, signals, req.allowLinkDiagnosis)
+
     if not z_scores:
         return DiagnoseResponse(
             anomalyDetected=False,

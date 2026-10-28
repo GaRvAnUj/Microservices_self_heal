@@ -39,6 +39,30 @@ public class PolicyService {
         return "restart";
     }
 
+    public Double getQValue(String faultType, String actionName) {
+        List<Double> values = jdbcTemplate.query(
+                "SELECT q_value FROM q_policy WHERE fault_type = ? AND action_name = ?",
+                (rs, rowNum) -> rs.getDouble("q_value"),
+                faultType,
+                actionName
+        );
+        return values.isEmpty() ? null : values.get(0);
+    }
+
+    public synchronized void resetForExperiment(boolean wrongInitialLinkLossQ) {
+        jdbcTemplate.update("UPDATE q_policy SET q_value = 0.9, update_count = 0 WHERE fault_type IN ('cpu_hog', 'crash')");
+        jdbcTemplate.update("UPDATE q_policy SET q_value = 0.9, update_count = 0 WHERE fault_type = 'link_delay' AND action_name = 'tune_link'");
+        jdbcTemplate.update("UPDATE q_policy SET q_value = 0.5, update_count = 0 WHERE fault_type = 'link_delay' AND action_name = 'breaker'");
+        jdbcTemplate.update(
+                "UPDATE q_policy SET q_value = ?, update_count = 0 WHERE fault_type = 'link_loss' AND action_name = 'breaker'",
+                wrongInitialLinkLossQ ? 0.5 : 0.9
+        );
+        jdbcTemplate.update(
+                "UPDATE q_policy SET q_value = ?, update_count = 0 WHERE fault_type = 'link_loss' AND action_name = 'tune_link'",
+                wrongInitialLinkLossQ ? 0.9 : 0.5
+        );
+    }
+
     public String getAlternativeAction(String faultType, String currentAction) {
         String sql = "SELECT action_name FROM q_policy WHERE fault_type = ? AND action_name != ? ORDER BY q_value DESC LIMIT 1";
         List<String> results = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString("action_name"), faultType, currentAction);

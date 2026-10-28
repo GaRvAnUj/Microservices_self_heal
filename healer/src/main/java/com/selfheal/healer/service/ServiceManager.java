@@ -1,5 +1,6 @@
 package com.selfheal.healer.service;
 
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +23,7 @@ import java.util.logging.Logger;
 @Component
 public class ServiceManager {
     private static final Logger log = Logger.getLogger(ServiceManager.class.getName());
+    private static final long RESTART_HEALTH_TIMEOUT_MS = 45_000;
 
     public record ServiceDef(String name, int port, String downstream, boolean critical) {}
 
@@ -95,18 +97,27 @@ public class ServiceManager {
         }
     }
 
+    @PostConstruct
     public synchronized void startAll() {
         File jarFile = findServiceJar();
         if (jarFile == null || !jarFile.exists()) {
-            log.severe("Could not locate service-app.jar! Ensure 'mvn package' has run.");
+            log.warning("Could not locate service-app.jar! Ensure 'mvn package' has run.");
             return;
         }
 
         File logsDir = new File("logs");
         if (!logsDir.exists()) logsDir.mkdirs();
 
+        File projectDir = resolveProjectRoot(jarFile);
+        startDiagnosisService(projectDir, logsDir);
+
         for (ServiceDef def : serviceDefs) {
-            startServiceProcess(def, jarFile, logsDir);
+            if (!isHealthy(def.name())) {
+                startServiceProcess(def, jarFile, logsDir);
+                try {
+                    Thread.sleep(800);
+                } catch (InterruptedException ignored) {}
+            }
         }
     }
 
@@ -135,9 +146,9 @@ public class ServiceManager {
         File logsDir = new File("logs");
         startServiceProcess(def, jarFile, logsDir);
 
-        // 3. Poll health up to 15s
+        // 3. Poll health while the Spring Boot service starts
         boolean healthy = false;
-        long deadline = System.currentTimeMillis() + 15000;
+        long deadline = System.currentTimeMillis() + RESTART_HEALTH_TIMEOUT_MS;
         while (System.currentTimeMillis() < deadline) {
             if (isHealthy(serviceName)) {
                 healthy = true;
@@ -155,9 +166,57 @@ public class ServiceManager {
             log.info("Service " + serviceName + " successfully restarted in " + downtime + " ms");
             return true;
         } else {
-            log.severe("Service " + serviceName + " failed to recover after restart within 15s");
+            log.severe("Service " + serviceName + " failed to recover after restart within "
+                    + RESTART_HEALTH_TIMEOUT_MS / 1000 + "s");
             return false;
         }
+    }
+
+    public synchronized Map<String, Boolean> restartAll() {
+        Map<String, Boolean> outcomes = new LinkedHashMap<>();
+        for (ServiceDef def : serviceDefs) {
+            outcomes.put(def.name(), restartService(def.name()));
+        }
+        return Collections.unmodifiableMap(outcomes);
+    }
+
+    public String getNeighborComponent(String component) {
+        if (component == null || component.isBlank()) {
+            return "gateway";
+        }
+
+        if (component.contains("->")) {
+            String[] edge = component.split("->", 2);
+            String caller = edge[0].trim();
+            String target = edge.length > 1 ? edge[1].trim() : "";
+            ServiceDef callerDef = getServiceDef(caller);
+            if (callerDef != null && callerDef.downstream() != null) {
+                for (String downstream : callerDef.downstream().split(",")) {
+                    String neighbor = downstream.split(":")[0].trim();
+                    if (!neighbor.equalsIgnoreCase(target)) {
+                        return caller + "->" + neighbor;
+                    }
+                }
+            }
+            return caller;
+        }
+
+        for (ServiceDef def : serviceDefs) {
+            if (def.downstream() == null) {
+                continue;
+            }
+            for (String downstream : def.downstream().split(",")) {
+                if (downstream.split(":")[0].trim().equalsIgnoreCase(component)) {
+                    return def.name();
+                }
+            }
+        }
+
+        ServiceDef targetDef = getServiceDef(component);
+        if (targetDef != null && targetDef.downstream() != null) {
+            return targetDef.downstream().split(",")[0].split(":")[0].trim();
+        }
+        return "gateway";
     }
 
     private void startServiceProcess(ServiceDef def, File jarFile, File logsDir) {
@@ -175,7 +234,18 @@ public class ServiceManager {
         }
 
         ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(jarFile.getParentFile().getParentFile()); // Root workspace dir
+        pb.directory(resolveProjectRoot(jarFile)); // Root workspace dir
+        String javaToolOptions = pb.environment().get("JAVA_TOOL_OPTIONS");
+        if (javaToolOptions != null) {
+            String childOptions = javaToolOptions
+                    .replaceAll("(?<!\\S)-agentlib:jdwp(?:=\\S+)?", "")
+                    .trim();
+            if (childOptions.isEmpty()) {
+                pb.environment().remove("JAVA_TOOL_OPTIONS");
+            } else {
+                pb.environment().put("JAVA_TOOL_OPTIONS", childOptions);
+            }
+        }
         File logFile = new File(logsDir, def.name() + ".log");
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
         pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile));
@@ -234,7 +304,82 @@ public class ServiceManager {
     }
 
     public Map<String, ServiceStatus> getStatuses() {
+        for (ServiceDef def : serviceDefs) {
+            ServiceStatus st = statuses.get(def.name());
+            if (st != null && !"RESTARTING".equals(st.getState())) {
+                if (isHealthy(def.name())) {
+                    if (!"UP".equals(st.getState())) {
+                        st.markStarted(def.port());
+                    }
+                } else {
+                    if ("UP".equals(st.getState())) {
+                        st.markDown();
+                    }
+                }
+            }
+        }
         return Collections.unmodifiableMap(statuses);
+    }
+
+    private File resolveProjectRoot(File jarFile) {
+        File dir = jarFile.getAbsoluteFile().getParentFile(); // target
+        if (dir != null && "target".equalsIgnoreCase(dir.getName())) {
+            dir = dir.getParentFile(); // service-app or healer
+        }
+        if (dir != null && ("service-app".equalsIgnoreCase(dir.getName()) || "healer".equalsIgnoreCase(dir.getName()))) {
+            dir = dir.getParentFile(); // root workspace
+        }
+        return dir != null ? dir : new File(".").getAbsoluteFile();
+    }
+
+    private void startDiagnosisService(File projectDir, File logsDir) {
+        if (isDiagnosisHealthy()) return;
+        File diagDir = new File(projectDir, "diagnosis-service");
+        if (!diagDir.exists()) return;
+
+        File modifyPython = new File(
+                new File(new File(projectDir, ".venv-modify-training"), "Scripts"),
+                "python.exe"
+        );
+        String pythonCommand = modifyPython.isFile() ? modifyPython.getAbsolutePath() : "python";
+        List<String> command = List.of(
+                pythonCommand,
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--app-dir",
+                diagDir.getAbsolutePath(),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "5000"
+        );
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(projectDir);
+        File logFile = new File(logsDir, "diagnosis-service.log");
+        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
+        pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile));
+        try {
+            Process p = pb.start();
+            processes.put("diagnosis-service", p);
+            log.info("Started Python diagnosis-service (PID " + p.pid() + ") on port 5000");
+        } catch (Exception e) {
+            log.log(Level.WARNING, "Failed to auto-start Python diagnosis-service (fallback will be used)", e);
+        }
+    }
+
+    public boolean isDiagnosisHealthy() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:5000/health"))
+                    .timeout(Duration.ofMillis(600))
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            return resp.statusCode() == 200;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private File findServiceJar() {

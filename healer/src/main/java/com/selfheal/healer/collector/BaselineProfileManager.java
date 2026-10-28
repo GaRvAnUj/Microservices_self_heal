@@ -16,6 +16,7 @@ public class BaselineProfileManager {
 
     private final Map<String, SignalBaseline> baselines = new ConcurrentHashMap<>();
     private volatile boolean baselineEstablished = false;
+    private volatile long baselineEstablishedAt = 0L;
     private static final double EPSILON = 0.001; // Avoid division by zero
 
     public void trainBaseline(List<Map<String, Double>> samples) {
@@ -52,6 +53,9 @@ public class BaselineProfileManager {
         }
 
         baselineEstablished = !baselines.isEmpty();
+        if (baselineEstablished) {
+            baselineEstablishedAt = System.currentTimeMillis();
+        }
     }
 
     public double computeZScore(String signalKey, double currentValue) {
@@ -76,6 +80,10 @@ public class BaselineProfileManager {
         return baselineEstablished;
     }
 
+    public long getBaselineEstablishedAt() {
+        return baselineEstablishedAt;
+    }
+
     public void setBaselineEstablished(boolean established) {
         this.baselineEstablished = established;
     }
@@ -87,6 +95,7 @@ public class BaselineProfileManager {
     public void setSignalBaseline(String signalKey, double mean, double std) {
         baselines.put(signalKey, new SignalBaseline(mean, Math.max(std, EPSILON), 1));
         baselineEstablished = true;
+        baselineEstablishedAt = System.currentTimeMillis();
     }
 
     private static Set<Map.Entry<String, Double>> entrySet(Map<String, Double> map) {

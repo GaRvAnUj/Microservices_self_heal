@@ -9,6 +9,9 @@ ping 127.0.0.1 -n 3 >nul
 set ROOT_DIR=%~dp0..
 set SVC_JAR=%ROOT_DIR%\service-app\target\service-app.jar
 set HEALER_JAR=%ROOT_DIR%\healer\target\healer.jar
+set PYTHON_EXE=%ROOT_DIR%\.venv-modify-training\Scripts\python.exe
+
+if not exist "%PYTHON_EXE%" set PYTHON_EXE=python
 
 if not exist "%SVC_JAR%" (
     echo [ERROR] service-app.jar not found at %SVC_JAR%. Run 'mvn clean package' first.
@@ -22,11 +25,13 @@ if not exist "%HEALER_JAR%" (
 
 echo Starting leaf services...
 start "text-8083" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=text --server.port=8083
+ping 127.0.0.1 -n 2 >nul
 start "media-8084" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=media --server.port=8084
+ping 127.0.0.1 -n 2 >nul
 start "user-8085" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=user --server.port=8085
+ping 127.0.0.1 -n 2 >nul
 start "post-storage-8086" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=post-storage --server.port=8086
-
-ping 127.0.0.1 -n 6 >nul
+ping 127.0.0.1 -n 4 >nul
 
 echo Starting compose-post...
 start "compose-post-8082" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=compose-post --server.port=8082 --svc.downstream="text:8083,media:8084,user:8085,post-storage:8086"
@@ -39,11 +44,11 @@ start "gateway-8081" /B java -Xmx128m -jar "%SVC_JAR%" --svc.name=gateway --serv
 ping 127.0.0.1 -n 4 >nul
 
 echo Starting Python diagnosis-service (port 5000)...
-start "diagnosis-service-5000" /B python -m uvicorn main:app --app-dir "%ROOT_DIR%\diagnosis-service" --host 127.0.0.1 --port 5000
+start "diagnosis-service-5000" /B "%PYTHON_EXE%" -m uvicorn main:app --app-dir "%ROOT_DIR%\diagnosis-service" --host 127.0.0.1 --port 5000
 
 ping 127.0.0.1 -n 3 >nul
 
-echo Starting Healer controller & dashboard...
+echo Starting Healer controller and dashboard...
 start "healer-8080" /B java -Xmx256m -jar "%HEALER_JAR%" --server.port=8080
 
 echo ========================================================

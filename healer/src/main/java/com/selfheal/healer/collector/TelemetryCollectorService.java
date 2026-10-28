@@ -24,6 +24,8 @@ import java.util.logging.Logger;
 @Service
 public class TelemetryCollectorService {
     private static final Logger log = Logger.getLogger(TelemetryCollectorService.class.getName());
+    public static final int BASELINE_WARMUP_REQUIRED_SAMPLES = 20;
+    public static final long TELEMETRY_POLL_INTERVAL_MS = 3000;
 
     private final ServiceManager serviceManager;
     private final BaselineProfileManager baselineManager;
@@ -37,7 +39,8 @@ public class TelemetryCollectorService {
     private volatile Map<String, Double> latestZScores = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
-    private int baselineWarmupRequiredSamples = 20; // 20 samples (approx 1 minute of traffic for PoC fast startup)
+    private int baselineWarmupRequiredSamples = BASELINE_WARMUP_REQUIRED_SAMPLES;
+    private volatile long collectorStartedAt = 0L;
 
     public TelemetryCollectorService(ServiceManager serviceManager,
                                      BaselineProfileManager baselineManager) {
@@ -52,12 +55,15 @@ public class TelemetryCollectorService {
     @PostConstruct
     public synchronized void start() {
         if (scheduler == null || scheduler.isShutdown()) {
+            collectorStartedAt = System.currentTimeMillis();
             scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "telemetry-collector");
                 t.setDaemon(true);
                 return t;
             });
-            scheduler.scheduleWithFixedDelay(this::collectCycle, 1, 3, TimeUnit.SECONDS);
+            scheduler.scheduleWithFixedDelay(
+                    this::collectCycle, 1, TELEMETRY_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS
+            );
             log.info("TelemetryCollectorService scheduled (poll every 3s, 3-window sample smoothing).");
         }
     }
@@ -182,6 +188,21 @@ public class TelemetryCollectorService {
 
     public Map<String, Double> getLatestSmoothedSample() {
         return latestSmoothedSample;
+    }
+
+    public boolean isBaselineEstablished() {
+        return baselineManager.isBaselineEstablished();
+    }
+
+    public int getBaselineSignalCount() {
+        return baselineManager.getAllBaselines().size();
+    }
+
+    public long getBaselineProfileDurationMs() {
+        long establishedAt = baselineManager.getBaselineEstablishedAt();
+        return collectorStartedAt > 0 && establishedAt >= collectorStartedAt
+                ? establishedAt - collectorStartedAt
+                : -1L;
     }
 
     public Map<String, Double> getLatestZScores() {

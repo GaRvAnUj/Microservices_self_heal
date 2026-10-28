@@ -1,11 +1,13 @@
 package com.selfheal.healer.engine;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfheal.healer.collector.TelemetryCollectorService;
 import com.selfheal.healer.load.LoadGenerator;
 import com.selfheal.healer.service.ServiceManager;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -27,6 +29,9 @@ import java.util.logging.Logger;
 @Service
 public class HealingEngine {
     private static final Logger log = Logger.getLogger(HealingEngine.class.getName());
+    public static final double ANOMALY_Z_THRESHOLD = 4.0;
+    public static final double ATTRIBUTION_LOW_Z_THRESHOLD = 2.5;
+    public static final double ATTRIBUTION_DOMINANCE_RATIO = 1.5;
 
     private final ServiceManager serviceManager;
     private final LoadGenerator loadGenerator;
@@ -39,6 +44,11 @@ public class HealingEngine {
 
     private volatile Incident.OperatingMode mode = Incident.OperatingMode.PROPOSED;
     private volatile Incident activeIncident = null;
+    private volatile boolean experimentPaused;
+    private volatile boolean plantedWrongTarget;
+    private volatile boolean wrongTargetPlanted;
+    private volatile String expectedFaultTarget;
+    private volatile String expectedFaultType;
     private final List<Incident> incidentHistory = new CopyOnWriteArrayList<>();
 
     private ScheduledExecutorService evaluationScheduler;
@@ -85,13 +95,16 @@ public class HealingEngine {
     }
 
     public synchronized void evaluateCycle() {
+        if (experimentPaused) {
+            return;
+        }
         try {
             LoadGenerator.SloStatus slo = loadGenerator.getSloStatus();
             Map<String, Double> zScores = telemetryCollector.getLatestZScores();
             Map<String, Double> smoothed = telemetryCollector.getLatestSmoothedSample();
 
             double maxZ = findMaxZScore(zScores);
-            if (maxZ >= 4.0) {
+            if (maxZ >= ANOMALY_Z_THRESHOLD) {
                 consecutiveAnomalySamples++;
             } else {
                 consecutiveAnomalySamples = 0;
@@ -109,6 +122,47 @@ public class HealingEngine {
         } catch (Exception e) {
             log.log(Level.WARNING, "Error in HealingEngine evaluation cycle: " + e.getMessage(), e);
         }
+    }
+
+    public synchronized void prepareExperiment(Incident.OperatingMode experimentMode, boolean plantWrongTarget) {
+        prepareExperiment(experimentMode, plantWrongTarget, null, null, "auto");
+    }
+
+    public synchronized void prepareExperiment(Incident.OperatingMode experimentMode,
+                                               boolean plantWrongTarget,
+                                               String expectedFaultTarget,
+                                               String expectedFaultType) {
+        prepareExperiment(experimentMode, plantWrongTarget, expectedFaultTarget, expectedFaultType, "auto");
+    }
+
+    public synchronized void prepareExperiment(Incident.OperatingMode experimentMode,
+                                               boolean plantWrongTarget,
+                                               String expectedFaultTarget,
+                                               String expectedFaultType,
+                                               String diagnosisSourceMode) {
+        experimentPaused = true;
+        if (activeIncident != null) {
+            activeIncident.escalate();
+            updateIncidentDb(activeIncident, "ESCALATED");
+            activeIncident = null;
+        }
+        incidentHistory.clear();
+        consecutiveAnomalySamples = 0;
+        mode = experimentMode;
+        plantedWrongTarget = plantWrongTarget;
+        wrongTargetPlanted = false;
+        this.expectedFaultTarget = Incident.isValidTarget(expectedFaultTarget)
+                ? expectedFaultTarget.trim()
+                : null;
+        this.expectedFaultType = expectedFaultType == null || expectedFaultType.isBlank()
+                ? null
+                : expectedFaultType.trim();
+        diagnosisClient.setSourceMode(diagnosisSourceMode);
+    }
+
+    public synchronized void startExperiment() {
+        consecutiveAnomalySamples = 0;
+        experimentPaused = false;
     }
 
     private void openIncident(LoadGenerator.SloStatus slo, double maxZ) {
@@ -136,7 +190,11 @@ public class HealingEngine {
         switch (incident.getStatus()) {
             case OPEN -> {
                 incident.setStatus(Incident.Status.DIAGNOSING);
-                dispatchRemediationAction(incident, zScores, smoothed);
+                if (incident.getMode() == Incident.OperatingMode.NO_HEAL) {
+                    diagnoseWithoutHealing(incident, zScores, smoothed);
+                } else {
+                    dispatchRemediationAction(incident, zScores, smoothed);
+                }
             }
             case VERIFYING -> {
                 int left = incident.decrementVerificationWindow();
@@ -149,6 +207,27 @@ public class HealingEngine {
         }
     }
 
+    private void diagnoseWithoutHealing(Incident incident,
+                                        Map<String, Double> zScores,
+                                        Map<String, Double> smoothed) {
+        DiagnosisClient.DiagnosisResult diagnosis = diagnosisClient.diagnose(zScores, smoothed, true);
+        String target = diagnosis.targetEntity();
+        String faultType = diagnosis.faultType();
+        if (!Incident.isValidTarget(target)) {
+            target = findMaxAbnormalService(zScores);
+            if (faultType == null || faultType.isBlank() || "null".equalsIgnoreCase(faultType)) {
+                faultType = "cpu_hog";
+            }
+        }
+        if (!Incident.isValidTarget(target)) {
+            log.warning("NO_HEAL incident has no valid diagnosis candidate.");
+            return;
+        }
+        incident.setDiagnosis(target, faultType, diagnosis.diagnosisSource());
+        log.info(String.format("NO_HEAL diagnosis: candidate=%s fault=%s source=%s",
+                target, faultType, diagnosis.diagnosisSource()));
+    }
+
     private void dispatchRemediationAction(Incident incident,
                                            Map<String, Double> zScores,
                                            Map<String, Double> smoothed) {
@@ -158,11 +237,15 @@ public class HealingEngine {
 
         if (incident.getMode() == Incident.OperatingMode.BASELINE) {
             // BASELINE: Blindly restart service with highest abnormality
-            String targetService = findMaxAbnormalService(zScores);
-            incident.setDiagnosis(targetService, "unknown_node_fault");
+            String targetService = maybePlantWrongTarget(findMaxAbnormalService(zScores));
+            if (!Incident.isValidTarget(targetService)) {
+                failUndiagnosableIncident(incident, "No service candidate was available for BASELINE.");
+                return;
+            }
+            incident.setDiagnosis(targetService, "unknown_node_fault", "NA");
 
             Incident.IncidentActionRecord action = new Incident.IncidentActionRecord(
-                    actionId, stepNum, "restart", targetService, now
+                    actionId, stepNum, "restart", targetService, now, "unknown_node_fault", null
             );
             incident.addAction(action);
             recordActionDb(incident.getId(), action);
@@ -172,29 +255,117 @@ public class HealingEngine {
             incident.startVerification(3);
 
         } else {
-            // PROPOSED: N1 Diagnosis + N2 Fault-type action
-            DiagnosisClient.DiagnosisResult diagnosis = diagnosisClient.diagnose(zScores, smoothed);
-            String target = diagnosis.targetEntity();
-            String faultType = diagnosis.faultType();
-            if (target == null || target.isBlank()) {
-                target = findMaxAbnormalService(zScores);
-                faultType = "cpu_hog";
-            }
-            incident.setDiagnosis(target, faultType);
+            boolean allowLinkCandidates = incident.getMode() != Incident.OperatingMode.PROPOSED_NO_LINK;
+            Incident.IncidentActionRecord previousAction = incident.getLatestAction();
+            boolean retryIneffectiveAction = incident.getMode() == Incident.OperatingMode.PROPOSED
+                    && previousAction != null
+                    && "INEFFECTIVE_ACTION".equals(previousAction.getVerdict());
+            String target;
+            String faultType;
+            String diagnosisSource;
+            String actionType;
 
-            String actionType = policyService.getBestAction(faultType);
+            if (retryIneffectiveAction) {
+                target = incident.getTargetEntity();
+                faultType = incident.getRootCauseType();
+                diagnosisSource = incident.getDiagnosisSource();
+                actionType = policyService.getAlternativeAction(faultType, previousAction.getActionType());
+            } else {
+                Set<String> excludedTargets = previouslyWrongTargets(incident);
+                DiagnosisClient.DiagnosisResult diagnosis = diagnosisClient.diagnose(
+                        zScores, smoothed, allowLinkCandidates, excludedTargets
+                );
+                target = diagnosis.targetEntity();
+                faultType = diagnosis.faultType();
+                diagnosisSource = diagnosis.diagnosisSource();
+                if (!Incident.isValidTarget(target)) {
+                    target = findMaxAbnormalService(zScores, excludedTargets);
+                    if (faultType == null || faultType.isBlank() || "null".equalsIgnoreCase(faultType)) {
+                        faultType = "cpu_hog";
+                    }
+                }
+                if (stepNum == 1) {
+                    target = maybePlantWrongTarget(target);
+                }
+                actionType = null;
+            }
+            if (!Incident.isValidTarget(target)) {
+                failUndiagnosableIncident(incident, "Diagnosis and statistical fallback returned no candidate.");
+                return;
+            }
+            if (actionType == null) {
+                actionType = policyService.getBestAction(faultType);
+            }
+            if (!retryIneffectiveAction) {
+                incident.setDiagnosis(target, faultType, diagnosisSource);
+            }
+
+            Double qBefore = policyService.getQValue(faultType, actionType);
+            String actionTarget = target;
+            if (!allowLinkCandidates && isLinkFaultType(faultType)) {
+                actionTarget = selectTopologyLinkForService(target);
+            }
             Incident.IncidentActionRecord action = new Incident.IncidentActionRecord(
-                    actionId, stepNum, actionType, target, now
+                    actionId, stepNum, actionType, actionTarget, now, faultType, qBefore
             );
             incident.addAction(action);
             recordActionDb(incident.getId(), action);
+            if (stepNum > 1) {
+                incident.getActions().get(stepNum - 2).setSuspectAfter(target);
+            }
 
             log.info(String.format("PROPOSED action dispatch: [%s] on target [%s] for [%s] (source: %s)",
-                    actionType, target, faultType, diagnosis.diagnosisSource()));
+                    actionType, actionTarget, faultType, diagnosisSource));
 
-            executeProposedAction(target, faultType, actionType);
+            executeProposedAction(actionTarget, faultType, actionType);
             incident.startVerification(3);
         }
+    }
+
+    private Set<String> previouslyWrongTargets(Incident incident) {
+        Set<String> excludedTargets = new HashSet<>();
+        for (Incident.IncidentActionRecord action : incident.getActions()) {
+            if ("WRONG_TARGET".equals(action.getVerdict())) {
+                excludedTargets.add(action.getTargetComponent());
+            }
+        }
+        return excludedTargets;
+    }
+
+    private static boolean isLinkFaultType(String faultType) {
+        return "link_delay".equals(faultType) || "link_loss".equals(faultType);
+    }
+
+    private String maybePlantWrongTarget(String target) {
+        if (!plantedWrongTarget || wrongTargetPlanted) {
+            return target;
+        }
+        String neighbor = serviceManager.getNeighborComponent(target);
+        if (!Incident.isValidTarget(neighbor) || neighbor.equals(target)) {
+            log.severe("Unable to plant a distinct, valid wrong target for " + target);
+            return null;
+        }
+        wrongTargetPlanted = true;
+        log.info(String.format("Experiment planted wrong target: %s -> %s", target, neighbor));
+        return neighbor;
+    }
+
+    private String selectTopologyLinkForService(String service) {
+        ServiceManager.ServiceDef serviceDef = serviceManager.getServiceDef(service);
+        if (serviceDef != null && serviceDef.downstream() != null && !serviceDef.downstream().isBlank()) {
+            String child = serviceDef.downstream().split(",")[0].split(":")[0].trim();
+            return service + "->" + child;
+        }
+        for (ServiceManager.ServiceDef def : serviceManager.getServiceDefs()) {
+            if (def.downstream() != null) {
+                for (String downstream : def.downstream().split(",")) {
+                    if (downstream.split(":")[0].trim().equalsIgnoreCase(service)) {
+                        return def.name() + "->" + service;
+                    }
+                }
+            }
+        }
+        return service;
     }
 
     private void executeProposedAction(String target, String faultType, String actionType) {
@@ -224,11 +395,14 @@ public class HealingEngine {
 
                 String url = String.format("http://127.0.0.1:%d/internal/policy/%s?timeoutMs=%d&maxRetries=%d&retryBudgetPct=%d&breakerOpen=%b",
                         callerDef.port(), callee, timeoutMs, maxRetries, budget, breakerOpen);
+                String jsonBody = String.format("{\"timeoutMs\":%d,\"maxRetries\":%d,\"retryBudgetPct\":%d,\"breakerOpen\":%b}",
+                        timeoutMs, maxRetries, budget, breakerOpen);
                 try {
                     HttpRequest req = HttpRequest.newBuilder()
                             .uri(URI.create(url))
+                            .header("Content-Type", "application/json")
                             .timeout(Duration.ofMillis(800))
-                            .PUT(HttpRequest.BodyPublishers.noBody())
+                            .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
                             .build();
                     httpClient.send(req, HttpResponse.BodyHandlers.discarding());
                     log.info("Applied runtime link policy to " + url);
@@ -248,23 +422,39 @@ public class HealingEngine {
         String target = incident.getTargetEntity();
         String faultType = incident.getRootCauseType();
 
-        double postActionZ = computeComponentZ(target, zScores);
+        String actionTarget = latest == null ? target : latest.getTargetComponent();
+        double postActionZ = computeComponentZ(actionTarget, zScores);
 
         if (slo.sloHealthy()) {
             // SUCCESS
             if (latest != null) {
                 latest.complete(now, postActionZ, "SUCCESS");
-                updateActionDb(latest);
             }
             incident.resolve(now);
             updateIncidentDb(incident, "RESOLVED");
 
-            if (incident.getMode() == Incident.OperatingMode.PROPOSED && latest != null) {
+            if (incident.getMode() != Incident.OperatingMode.BASELINE && latest != null) {
                 policyService.rewardAction(faultType, latest.getActionType());
-                try {
-                    String featuresJson = mapper.writeValueAsString(smoothed);
-                    policyService.saveLabelledSample(target, faultType, featuresJson);
-                } catch (Exception ignored) {}
+                latest.setQAfter(policyService.getQValue(faultType, latest.getActionType()));
+            }
+            boolean recoveredAfterWrongTarget = incident.getActions().stream()
+                    .anyMatch(action -> "WRONG_TARGET".equals(action.getVerdict()));
+            if (incident.getMode() == Incident.OperatingMode.PROPOSED && recoveredAfterWrongTarget) {
+                if (!Incident.isValidTarget(expectedFaultTarget) || expectedFaultType == null) {
+                    log.warning("Cannot save labelled sample after WRONG_TARGET: injected ground truth was not provided.");
+                } else {
+                    try {
+                        String featuresJson = mapper.writeValueAsString(smoothed);
+                        policyService.saveLabelledSample(expectedFaultTarget, expectedFaultType, featuresJson);
+                    } catch (JsonProcessingException e) {
+                        log.log(Level.SEVERE, "Unable to serialize telemetry for labelled sample.", e);
+                    } catch (DataAccessException e) {
+                        log.log(Level.SEVERE, "Unable to persist labelled sample after confirmed recovery.", e);
+                    }
+                }
+            }
+            if (latest != null) {
+                updateActionDb(latest);
             }
 
             log.info(String.format("INCIDENT RESOLVED [%s] in %d ms!", incident.getId(), (now - incident.getStartedAt())));
@@ -275,7 +465,7 @@ public class HealingEngine {
             // REMEDIATION FAILED: perform N3 Attribution if in PROPOSED mode
             if (incident.getMode() == Incident.OperatingMode.BASELINE) {
                 if (latest != null) {
-                    latest.complete(now, postActionZ, "INEFFECTIVE_ACTION");
+                    latest.complete(now, postActionZ, "NA");
                     updateActionDb(latest);
                 }
                 if (incident.getActions().size() >= 3) {
@@ -287,18 +477,23 @@ public class HealingEngine {
                     dispatchRemediationAction(incident, zScores, smoothed);
                 }
             } else {
-                // N3: Recovery-Failure Attribution Logic
-                String verdict = determineAttributionVerdict(target, postActionZ, zScores);
+                boolean attributionEnabled = incident.getMode() == Incident.OperatingMode.PROPOSED;
+                String verdict = attributionEnabled
+                        ? determineAttributionVerdict(actionTarget, postActionZ, zScores)
+                        : "NA";
                 if (latest != null) {
                     latest.complete(now, postActionZ, verdict);
-                    updateActionDb(latest);
                 }
 
-                log.warning(String.format("Remediation verification failed. N3 Attribution: %s (postActionZ=%.2f)",
-                        verdict, postActionZ));
+                log.warning(String.format("Remediation verification failed. %s: %s (postActionZ=%.2f)",
+                        attributionEnabled ? "N3 Attribution" : "Uniform failure feedback", verdict, postActionZ));
 
-                if ("INEFFECTIVE_ACTION".equals(verdict) && latest != null) {
+                if (latest != null && (!attributionEnabled || "INEFFECTIVE_ACTION".equals(verdict))) {
                     policyService.penalizeAction(faultType, latest.getActionType());
+                }
+                if (latest != null) {
+                    latest.setQAfter(policyService.getQValue(faultType, latest.getActionType()));
+                    updateActionDb(latest);
                 }
 
                 if (incident.getActions().size() >= 3) {
@@ -315,24 +510,24 @@ public class HealingEngine {
     }
 
     public String determineAttributionVerdict(String target, double targetZ, Map<String, Double> zScores) {
-        // 1. If acted on link (A -> B) and callee B has z >= 4.0 -> WRONG_TARGET (suspect callee)
+        // 1. If acted on link (A -> B) and callee B has z >= threshold -> WRONG_TARGET
         if (target != null && target.contains("->")) {
             String[] parts = target.split("->");
             String callee = parts.length > 1 ? parts[1].trim() : "";
             double calleeZ = computeComponentZ(callee, zScores);
-            if (calleeZ >= 4.0) {
+            if (calleeZ >= ANOMALY_Z_THRESHOLD) {
                 return "WRONG_TARGET";
             }
         }
 
-        // 2. If target z >= 4.0 and no other component > 1.5 * targetZ -> INEFFECTIVE_ACTION
+        // 2. If target z >= threshold and no other component exceeds the dominance ratio
         double maxOtherZ = findMaxZScoreExcluding(target, zScores);
-        if (targetZ >= 4.0 && maxOtherZ <= (1.5 * targetZ)) {
+        if (targetZ >= ANOMALY_Z_THRESHOLD && maxOtherZ <= (ATTRIBUTION_DOMINANCE_RATIO * targetZ)) {
             return "INEFFECTIVE_ACTION";
         }
 
-        // 3. If target z < 2.5 and another component z >= 4.0 -> WRONG_TARGET
-        if (targetZ < 2.5 && maxOtherZ >= 4.0) {
+        // 3. If target z is low and another component exceeds the anomaly threshold -> WRONG_TARGET
+        if (targetZ < ATTRIBUTION_LOW_Z_THRESHOLD && maxOtherZ >= ANOMALY_Z_THRESHOLD) {
             return "WRONG_TARGET";
         }
 
@@ -383,9 +578,26 @@ public class HealingEngine {
     }
 
     private String findMaxAbnormalService(Map<String, Double> zScores) {
-        String best = "gateway";
-        double max = -1.0;
+        return findMaxAbnormalService(zScores, Set.of());
+    }
+
+    private String findMaxAbnormalService(Map<String, Double> zScores, Set<String> excludedTargets) {
+        if (zScores == null || zScores.isEmpty()) {
+            return null;
+        }
+        Set<String> excluded = excludedTargets == null ? Set.of() : excludedTargets;
+        String best = null;
+        double max = Double.NEGATIVE_INFINITY;
         for (ServiceManager.ServiceDef def : serviceManager.getServiceDefs()) {
+            if (excluded.contains(def.name())) {
+                continue;
+            }
+            boolean hasNodeSignals = zScores.keySet().stream().anyMatch(key ->
+                    key.startsWith("node:" + def.name() + ":")
+                            || key.startsWith("log:" + def.name() + ":"));
+            if (!hasNodeSignals) {
+                continue;
+            }
             double z = computeComponentZ(def.name(), zScores);
             if (z > max) {
                 max = z;
@@ -393,6 +605,14 @@ public class HealingEngine {
             }
         }
         return best;
+    }
+
+    private void failUndiagnosableIncident(Incident incident, String reason) {
+        log.severe(String.format("Incident [%s] escalated without dispatch: %s", incident.getId(), reason));
+        incident.escalate();
+        updateIncidentDb(incident, "ESCALATED");
+        incidentHistory.add(incident);
+        activeIncident = null;
     }
 
     private void recordActionDb(String incidentId, Incident.IncidentActionRecord action) {

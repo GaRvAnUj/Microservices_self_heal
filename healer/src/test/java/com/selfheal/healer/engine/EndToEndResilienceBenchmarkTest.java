@@ -196,5 +196,142 @@ public class EndToEndResilienceBenchmarkTest {
         );
         assertNotNull(penalizedQ);
         assertEquals(0.27, penalizedQ, 0.001);
+        assertEquals(2, incident.getActions().size());
+        assertEquals("compose-post->text", incident.getActions().get(1).getTargetComponent());
+        assertEquals("breaker", incident.getActions().get(1).getActionType());
+    }
+
+    @Test
+    void testNoLinkModeReturnsNodeCandidatesOnly() {
+        Map<String, Double> zScores = Map.of(
+                "link:compose-post->text:avg_latency", 8.0,
+                "node:text:cpu_process", 6.0,
+                "node:compose-post:cpu_process", 0.2
+        );
+
+        DiagnosisClient.DiagnosisResult result = localizer.localize(zScores, Map.of(), false);
+
+        assertTrue(result.anomalyDetected());
+        assertEquals("text", result.targetEntity());
+        assertFalse(result.isLinkFault());
+        assertEquals("link_delay", localizer.inferLinkFaultType(zScores));
+    }
+
+    @Test
+    void testNoAttributionModePenalizesEveryFailedActionUniformly() {
+        healingEngine.setMode(Incident.OperatingMode.PROPOSED_NO_ATTRIB);
+        when(loadGenerator.getSloStatus()).thenReturn(
+                new LoadGenerator.SloStatus(750.0, 300.0, 0.02, 70, false, 100)
+        );
+        Map<String, Double> zScores = Map.of(
+                "link:compose-post->text:avg_latency", 6.0,
+                "node:text:cpu_process", 0.2
+        );
+        when(telemetryCollector.getLatestZScores()).thenReturn(zScores);
+        when(telemetryCollector.getLatestSmoothedSample()).thenReturn(Map.of(
+                "link:compose-post->text:avg_latency", 850.0
+        ));
+
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+        Incident incident = healingEngine.getActiveIncident();
+        assertNotNull(incident);
+        Incident.IncidentActionRecord failedAttempt = incident.getLatestAction();
+
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+
+        assertEquals("NA", failedAttempt.getVerdict());
+        assertEquals(0.27, failedAttempt.getQAfter(), 0.001);
+    }
+
+    @Test
+    void testWrongTargetRetriesNextSuspectAndLabelsConfirmedGroundTruth() {
+        when(serviceManager.getNeighborComponent("text")).thenReturn("compose-post");
+        healingEngine.prepareExperiment(Incident.OperatingMode.PROPOSED, true, "text", "cpu_hog");
+        healingEngine.startExperiment();
+
+        when(loadGenerator.getSloStatus()).thenReturn(
+                new LoadGenerator.SloStatus(950.0, 500.0, 0.04, 70, false, 150)
+        );
+        Map<String, Double> faultyZ = Map.of(
+                "node:text:cpu_process", 8.2,
+                "node:compose-post:cpu_process", 0.2
+        );
+        when(telemetryCollector.getLatestZScores()).thenReturn(faultyZ);
+        when(telemetryCollector.getLatestSmoothedSample()).thenReturn(Map.of("node:text:cpu_process", 0.98));
+
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+        Incident incident = healingEngine.getActiveIncident();
+        assertNotNull(incident);
+        assertEquals("compose-post", incident.getLatestAction().getTargetComponent());
+
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+
+        assertEquals(2, incident.getActions().size());
+        assertEquals("WRONG_TARGET", incident.getActions().get(0).getVerdict());
+        assertEquals("text", incident.getActions().get(0).getSuspectAfter());
+        assertEquals("text", incident.getActions().get(1).getTargetComponent());
+        assertEquals(0.9, policyService.getQValue("cpu_hog", "restart"), 0.001);
+
+        when(loadGenerator.getSloStatus()).thenReturn(
+                new LoadGenerator.SloStatus(120.0, 35.0, 0.005, 70, true, 300)
+        );
+        when(telemetryCollector.getLatestZScores()).thenReturn(Map.of(
+                "node:text:cpu_process", 0.2,
+                "node:compose-post:cpu_process", 0.2
+        ));
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+
+        assertEquals(Incident.Status.RESOLVED, incident.getStatus());
+        assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM labelled_samples", Integer.class));
+        assertEquals("text", jdbcTemplate.queryForObject(
+                "SELECT true_faulty_component FROM labelled_samples", String.class));
+        assertEquals("cpu_hog", jdbcTemplate.queryForObject(
+                "SELECT fault_type FROM labelled_samples", String.class));
+        assertEquals(0.93, policyService.getQValue("cpu_hog", "restart"), 0.001);
+    }
+
+    @Test
+    void testNoHealDiagnosesWithoutDispatchingAnAction() {
+        healingEngine.prepareExperiment(
+                Incident.OperatingMode.NO_HEAL, false, "text", "cpu_hog", "fallback"
+        );
+        healingEngine.startExperiment();
+        when(loadGenerator.getSloStatus()).thenReturn(
+                new LoadGenerator.SloStatus(950.0, 500.0, 0.04, 70, false, 150)
+        );
+        when(telemetryCollector.getLatestZScores()).thenReturn(Map.of(
+                "node:text:cpu_process", 8.2,
+                "node:compose-post:cpu_process", 0.2
+        ));
+
+        healingEngine.evaluateCycle();
+        healingEngine.evaluateCycle();
+
+        Incident incident = healingEngine.getActiveIncident();
+        assertNotNull(incident);
+        assertEquals(Incident.OperatingMode.NO_HEAL, incident.getMode());
+        assertEquals("text", incident.getTargetEntity());
+        assertEquals("JAVA_STATISTICAL_APPROXIMATION", incident.getDiagnosisSource());
+        assertTrue(incident.getActions().isEmpty());
+        verify(serviceManager, never()).restartService(anyString());
+    }
+
+    @Test
+    void testExperimentQResetRestoresCorrectAndWrongLinkLossPriors() {
+        policyService.resetForExperiment(false);
+        assertEquals(0.9, policyService.getQValue("link_loss", "breaker"), 0.001);
+        assertEquals(0.5, policyService.getQValue("link_loss", "tune_link"), 0.001);
+
+        policyService.resetForExperiment(true);
+        assertEquals(0.5, policyService.getQValue("link_loss", "breaker"), 0.001);
+        assertEquals(0.9, policyService.getQValue("link_loss", "tune_link"), 0.001);
     }
 }

@@ -69,25 +69,46 @@ public class CommonChaosController {
      * Dynamic link policy update (N2: Fault-type-driven healing without restart).
      */
     @PutMapping("/internal/policy/{target}")
-    public ResponseEntity<Map<String, Object>> updatePolicy(@PathVariable("target") String target,
-                                                            @RequestBody EdgePolicy updatedPolicy) {
+    public ResponseEntity<Map<String, Object>> updatePolicy(
+            @PathVariable("target") String target,
+            @RequestBody(required = false) EdgePolicy body,
+            @RequestParam(value = "timeoutMs", required = false) Integer timeoutMs,
+            @RequestParam(value = "maxRetries", required = false) Integer maxRetries,
+            @RequestParam(value = "retryBudgetPct", required = false) Integer retryBudgetPct,
+            @RequestParam(value = "breakerOpen", required = false) Boolean breakerOpen) {
+
+        EdgePolicy current = policyRegistry.getPolicy(target);
+        int t = (body != null && body.getTimeoutMs() > 0) ? body.getTimeoutMs() : (timeoutMs != null ? timeoutMs : (current != null ? current.getTimeoutMs() : 800));
+        int r = (body != null) ? body.getMaxRetries() : (maxRetries != null ? maxRetries : (current != null ? current.getMaxRetries() : 2));
+        int b = (body != null) ? body.getRetryBudgetPct() : (retryBudgetPct != null ? retryBudgetPct : (current != null ? current.getRetryBudgetPct() : 20));
+        boolean brk = (body != null) ? body.isBreakerOpen() : (breakerOpen != null ? breakerOpen : (current != null ? current.isBreakerOpen() : false));
+
+        EdgePolicy updatedPolicy = new EdgePolicy(t, r, b, brk);
         policyRegistry.updatePolicy(target, updatedPolicy);
         return ResponseEntity.ok(Map.of(
                 "status", "UPDATED",
                 "target", target,
-                "policy", policyRegistry.getPolicy(target)
+                "policy", updatedPolicy
         ));
     }
 
     /**
-     * Chaos endpoint: Burn CPU via busy-loops on all available processors.
+     * Chaos endpoint: Burn CPU using a bounded number of busy-loop threads.
      */
     @PostMapping("/chaos/cpu")
-    public ResponseEntity<Map<String, Object>> toggleCpuHog(@RequestParam("on") boolean on) {
+    public ResponseEntity<Map<String, Object>> toggleCpuHog(
+            @RequestParam("on") boolean on,
+            @RequestParam(value = "threads", required = false) Integer requestedThreads) {
         if (on) {
+            int availableProcessors = Runtime.getRuntime().availableProcessors();
+            int threads = requestedThreads == null ? availableProcessors : requestedThreads;
+            if (threads < 1 || threads > availableProcessors) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", "threads must be between 1 and " + availableProcessors
+                ));
+            }
             if (cpuHogActive.compareAndSet(false, true)) {
-                int cores = Runtime.getRuntime().availableProcessors();
-                for (int i = 0; i < cores; i++) {
+                for (int i = 0; i < threads; i++) {
                     Thread t = new Thread(() -> {
                         while (cpuHogActive.get()) {
                             // Busy loop to burn CPU

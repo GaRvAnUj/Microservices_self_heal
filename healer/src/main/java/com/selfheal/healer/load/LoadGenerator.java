@@ -1,5 +1,6 @@
 package com.selfheal.healer.load;
 
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +23,9 @@ import java.util.logging.Logger;
 @Component
 public class LoadGenerator {
     private static final Logger log = Logger.getLogger(LoadGenerator.class.getName());
+    public static final long WINDOW_MS = 10000;
+    public static final double SLO_P95_LIMIT_MS = 400.0;
+    public static final double SLO_ERROR_LIMIT = 0.03;
 
     public record RequestRecord(long timestamp, long latencyMs, boolean success) {}
 
@@ -36,7 +40,6 @@ public class LoadGenerator {
 
     private ScheduledExecutorService executorService;
     private int targetRps = 7; // 7 requests/sec (within 5-10 range)
-    private static final long WINDOW_MS = 10000; // 10s sliding window
 
     public LoadGenerator() {
         this("http://127.0.0.1:8081/work");
@@ -49,6 +52,7 @@ public class LoadGenerator {
                 .build();
     }
 
+    @PostConstruct
     public synchronized void start() {
         if (running.compareAndSet(false, true)) {
             executorService = Executors.newScheduledThreadPool(4, r -> {
@@ -147,7 +151,7 @@ public class LoadGenerator {
         double errorRate = (double) errCount / latencies.size();
 
         // SLO: p95 < 400 ms AND errorRate < 3% (0.03)
-        boolean healthy = (p95 < 400.0) && (errorRate < 0.03);
+        boolean healthy = (p95 < SLO_P95_LIMIT_MS) && (errorRate < SLO_ERROR_LIMIT);
 
         return new SloStatus(p95, avg, errorRate, snapshot.size(), healthy, totalRequests.get());
     }

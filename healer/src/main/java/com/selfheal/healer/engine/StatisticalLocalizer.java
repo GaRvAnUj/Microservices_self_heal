@@ -17,10 +17,37 @@ import java.util.*;
  */
 @Component
 public class StatisticalLocalizer {
+    public static final double LINK_CANDIDATE_Z_THRESHOLD = 4.0;
+    public static final double CALLEE_ABNORMALITY_Z_THRESHOLD = 3.0;
 
     public DiagnosisClient.DiagnosisResult localize(Map<String, Double> zScores, Map<String, Double> smoothedSignals) {
+        return localize(zScores, smoothedSignals, true);
+    }
+
+    public DiagnosisClient.DiagnosisResult localize(Map<String, Double> zScores,
+                                                   Map<String, Double> smoothedSignals,
+                                                   boolean allowLinkCandidates) {
+        return localize(zScores, smoothedSignals, allowLinkCandidates, Set.of());
+    }
+
+    public DiagnosisClient.DiagnosisResult localize(Map<String, Double> zScores,
+                                                   Map<String, Double> smoothedSignals,
+                                                   boolean allowLinkCandidates,
+                                                   Set<String> excludedTargets) {
         if (zScores == null || zScores.isEmpty()) {
             return new DiagnosisClient.DiagnosisResult(false, null, null, false, 0.0, "JAVA_STATISTICAL_APPROXIMATION");
+        }
+        Set<String> excluded = excludedTargets == null ? Set.of() : excludedTargets;
+
+        if (!allowLinkCandidates) {
+            Map<String, Double> nodeScores = new LinkedHashMap<>();
+            for (Map.Entry<String, Double> entry : zScores.entrySet()) {
+                String key = entry.getKey();
+                if (!key.startsWith("link:")) {
+                    nodeScores.put(key, entry.getValue());
+                }
+            }
+            zScores = nodeScores;
         }
 
         // 1. Group z-scores by links and nodes
@@ -67,8 +94,9 @@ public class StatisticalLocalizer {
 
         // 2. Identify candidate abnormal links (z >= 4.0)
         String worstLink = null;
-        double maxLinkZ = 3.99; // threshold: z >= 4.0
+        double maxLinkZ = LINK_CANDIDATE_Z_THRESHOLD - 0.01;
         boolean isDelay = true;
+        boolean worstCandidateIsNode = false;
 
         Set<String> allLinks = new HashSet<>();
         allLinks.addAll(linkLatencyZ.keySet());
@@ -79,24 +107,32 @@ public class StatisticalLocalizer {
             double errZ = linkErrorZ.getOrDefault(link, 0.0);
             double higherZ = Math.max(latZ, errZ);
 
-            if (higherZ > maxLinkZ) {
+            String[] parts = link.split("->");
+            String callee = parts.length > 1 ? parts[1].trim() : "";
+            double calleeAbnormality = Math.max(
+                    nodeCpuZ.getOrDefault(callee, 0.0),
+                    nodeLogZ.getOrDefault(callee, 0.0)
+            );
+            boolean candidateIsNode = calleeAbnormality >= CALLEE_ABNORMALITY_Z_THRESHOLD;
+            String candidate = candidateIsNode ? callee : link;
+            if (!excluded.contains(candidate) && higherZ > maxLinkZ) {
                 maxLinkZ = higherZ;
                 worstLink = link;
                 isDelay = (latZ >= errZ);
+                worstCandidateIsNode = candidateIsNode;
             }
         }
 
         // 3. Apply N1 Disambiguation if an abnormal link is detected
         if (worstLink != null) {
             String[] parts = worstLink.split("->");
-            String caller = parts[0].trim();
             String callee = parts.length > 1 ? parts[1].trim() : "";
 
             double calleeCpuZ = nodeCpuZ.getOrDefault(callee, 0.0);
             double calleeLogZ = nodeLogZ.getOrDefault(callee, 0.0);
             double calleeAbnormality = Math.max(calleeCpuZ, calleeLogZ);
 
-            if (calleeAbnormality < 3.0) {
+            if (!worstCandidateIsNode) {
                 // Callee is healthy -> Pure LINK FAULT on (caller -> callee)
                 String faultType = isDelay ? "link_delay" : "link_loss";
                 return new DiagnosisClient.DiagnosisResult(
@@ -123,7 +159,7 @@ public class StatisticalLocalizer {
 
         // 4. No abnormal link found; look for abnormal nodes (z >= 4.0)
         String worstNode = null;
-        double maxNodeZ = 3.99;
+        double maxNodeZ = LINK_CANDIDATE_Z_THRESHOLD - 0.01;
         String detectedFault = "crash";
 
         Set<String> allNodes = new HashSet<>();
@@ -131,6 +167,9 @@ public class StatisticalLocalizer {
         allNodes.addAll(nodeLogZ.keySet());
 
         for (String node : allNodes) {
+            if (excluded.contains(node)) {
+                continue;
+            }
             double cpuZ = nodeCpuZ.getOrDefault(node, 0.0);
             double logZ = nodeLogZ.getOrDefault(node, 0.0);
             double higherZ = Math.max(cpuZ, logZ);
@@ -155,5 +194,39 @@ public class StatisticalLocalizer {
 
         // 5. No abnormal z-scores detected
         return new DiagnosisClient.DiagnosisResult(false, null, null, false, 0.0, "JAVA_STATISTICAL_APPROXIMATION");
+    }
+
+    public String inferLinkFaultType(Map<String, Double> zScores) {
+        Map<String, double[]> linkScores = new HashMap<>();
+        if (zScores != null) {
+            for (Map.Entry<String, Double> entry : zScores.entrySet()) {
+                String key = entry.getKey();
+                if (!key.startsWith("link:") || !key.contains("->")) {
+                    continue;
+                }
+                int separator = key.indexOf(':', 5);
+                if (separator <= 0) {
+                    continue;
+                }
+                double[] metrics = linkScores.computeIfAbsent(key.substring(5, separator), ignored -> new double[2]);
+                String metric = key.substring(separator + 1);
+                if ("avg_latency".equals(metric)) {
+                    metrics[0] = Math.max(metrics[0], entry.getValue());
+                } else if ("error_rate".equals(metric)) {
+                    metrics[1] = Math.max(metrics[1], entry.getValue());
+                }
+            }
+        }
+
+        double maxLatency = 0.0;
+        double maxErrors = 0.0;
+        for (double[] metrics : linkScores.values()) {
+            maxLatency = Math.max(maxLatency, metrics[0]);
+            maxErrors = Math.max(maxErrors, metrics[1]);
+        }
+        if (Math.max(maxLatency, maxErrors) < LINK_CANDIDATE_Z_THRESHOLD) {
+            return null;
+        }
+        return maxLatency >= maxErrors ? "link_delay" : "link_loss";
     }
 }

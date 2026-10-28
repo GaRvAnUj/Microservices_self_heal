@@ -77,7 +77,7 @@ public class DashboardApiControllerTest {
     @Test
     void testInjectAndClearChaos() {
         ResponseEntity<Map<String, Object>> resp = controller.injectChaos(
-                "link_delay", "compose-post", "text", 1500, 20.0
+                "link_delay", "compose-post", "text", 1500, 20.0, 0
         );
         assertEquals(200, resp.getStatusCode().value());
         assertEquals("INJECTED", resp.getBody().get("status"));

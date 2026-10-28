@@ -1,9 +1,93 @@
+# ==============================================================================
+# Java & Maven Build Artifacts
+# ==============================================================================
 target/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+*.class
+out/
+hs_err_pid*
+replay_pid*
 
-### STS ###
+# ==============================================================================
+# Python & Testing Artifacts
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+*.py,cover
+nosetests.xml
+coverage.xml
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+
+# ==============================================================================
+# Machine Learning Model Weights, Checkpoints & Large Binaries
+# ==============================================================================
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.onnx
+*.safetensors
+/diagnosis-service/models/
+/MODIFy-main/
+
+# ==============================================================================
+# Runtime Databases & Logs
+# ==============================================================================
+*.h2.db
+*.trace.db
+*.mv.db
+*.db
+*.sqlite3
+/data/
+healer/data/
+
+*.log
+*.log.*
+*.out
+*.err
+/logs/
+healer/logs/
+
+# ==============================================================================
+# Experiment Outputs & Dynamic Results
+# ==============================================================================
+/results/
+
+# ==============================================================================
+# Internal Documentation, Handovers & Scratch Guides
+# ==============================================================================
+restart.md
+/docs/
+.github/modernize/
+
+# ==============================================================================
+# IDEs & Developer Tooling
+# ==============================================================================
+.vscode/
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# STS / Eclipse
 .apt_generated
 .classpath
 .factorypath
@@ -12,30 +96,35 @@ target/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-
-### NetBeans ###
+# NetBeans
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbproject/load-impl.xml
 /nbproject/copylib-libraries.properties
 
-### VS Code ###
-.vscode/
+# ==============================================================================
+# Secrets, Keys, and Local Configuration
+# ==============================================================================
+.env*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets.json
 
-### OS files ###
+# ==============================================================================
+# Operating System Metadata
+# ==============================================================================
 Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
 .DS_Store
-
-### Application runtime files ###
-*.log
-*.h2.db
-*.trace.db
-__pycache__/
-*.py[cod]
-.venv/
+.Spotlight-V100
+.Trashes

@@ -3,6 +3,7 @@ package com.selfheal.healer.engine;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -76,5 +77,20 @@ public class StatisticalLocalizerTest {
         assertEquals("post-storage", result.targetEntity());
         assertEquals("crash", result.faultType());
         assertFalse(result.isLinkFault());
+    }
+
+    @Test
+    void testExcludingFailedCandidateReturnsNextSuspect() {
+        Map<String, Double> zScores = Map.of(
+                "node:text:cpu_process", 8.0,
+                "node:media:cpu_process", 6.0
+        );
+
+        DiagnosisClient.DiagnosisResult result = localizer.localize(
+                zScores, Map.of(), true, Set.of("text")
+        );
+
+        assertTrue(result.anomalyDetected());
+        assertEquals("media", result.targetEntity());
     }
 }

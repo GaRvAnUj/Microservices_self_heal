@@ -137,6 +137,9 @@ public class DashboardApiController {
         map.put("qPolicy", policyService.getAllQEntries());
         map.put("zScores", telemetryCollector.getLatestZScores());
         map.put("smoothedSignals", telemetryCollector.getLatestSmoothedSample());
+        map.put("baselineEstablished", telemetryCollector.isBaselineEstablished());
+        map.put("baselineSignalCount", telemetryCollector.getBaselineSignalCount());
+        map.put("baselineProfileDurationMs", telemetryCollector.getBaselineProfileDurationMs());
         return map;
     }
 
@@ -164,7 +167,8 @@ public class DashboardApiController {
             @RequestParam(value = "caller", required = false) String caller,
             @RequestParam(value = "target", required = false) String target,
             @RequestParam(value = "delayMs", defaultValue = "0") int delayMs,
-            @RequestParam(value = "lossPct", defaultValue = "0.0") double lossPct) {
+            @RequestParam(value = "lossPct", defaultValue = "0.0") double lossPct,
+            @RequestParam(value = "threads", defaultValue = "0") int threads) {
 
         String lowerType = type.toLowerCase().trim();
 
@@ -188,8 +192,19 @@ public class DashboardApiController {
             ServiceManager.ServiceDef def = serviceManager.getServiceDef(target);
             if (def == null) return ResponseEntity.badRequest().body(Map.of("error", "Unknown service: " + target));
 
-            callServiceChaos(def.port(), "/chaos/cpu?on=true");
-            return ResponseEntity.ok(Map.of("status", "INJECTED", "type", "cpu_hog", "target", target));
+            if (threads < 0) {
+                return ResponseEntity.badRequest().body(Map.of("error", "threads must be non-negative"));
+            }
+            String threadParameter = threads == 0 ? "" : "&threads=" + threads;
+            if (!callServiceChaos(def.port(), "/chaos/cpu?on=true" + threadParameter)) {
+                return ResponseEntity.status(502).body(Map.of("error", "CPU fault injection failed for " + target));
+            }
+            return ResponseEntity.ok(Map.of(
+                    "status", "INJECTED",
+                    "type", "cpu_hog",
+                    "target", target,
+                    "threads", threads == 0 ? Runtime.getRuntime().availableProcessors() : threads
+            ));
         }
 
         if ("crash".equals(lowerType)) {
@@ -197,7 +212,9 @@ public class DashboardApiController {
             ServiceManager.ServiceDef def = serviceManager.getServiceDef(target);
             if (def == null) return ResponseEntity.badRequest().body(Map.of("error", "Unknown service: " + target));
 
-            callServiceChaos(def.port(), "/chaos/crash");
+            if (!callServiceChaos(def.port(), "/chaos/crash")) {
+                return ResponseEntity.status(502).body(Map.of("error", "Crash fault injection failed for " + target));
+            }
             return ResponseEntity.ok(Map.of("status", "INJECTED", "type", "crash", "target", target));
         }
 
@@ -217,16 +234,26 @@ public class DashboardApiController {
         return ResponseEntity.ok(Map.of("status", "ALL_CHAOS_CLEARED"));
     }
 
-    private void callServiceChaos(int port, String path) {
+    private boolean callServiceChaos(int port, String path) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create("http://127.0.0.1:" + port + path))
                     .timeout(Duration.ofMillis(800))
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build();
-            httpClient.send(req, HttpResponse.BodyHandlers.discarding());
-        } catch (Exception e) {
+            HttpResponse<Void> response = httpClient.send(req, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                log.warning("Chaos call to port " + port + path + " returned HTTP " + response.statusCode());
+                return false;
+            }
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.log(Level.WARNING, "Chaos call to port " + port + path + " was interrupted.", e);
+            return false;
+        } catch (IOException e) {
             log.warning("Chaos call to port " + port + path + " failed: " + e.getMessage());
+            return false;
         }
     }
 }

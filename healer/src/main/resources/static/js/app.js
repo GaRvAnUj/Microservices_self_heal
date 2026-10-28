@@ -1,6 +1,11 @@
 /**
  * Healer Control Plane Dashboard Client
- * 100% offline, zero-dependency HTML5 Canvas topology and metric charts.
+ * 100% offline, zero-dependency HTML5 Canvas topology and real-time metric charts.
+ * Features:
+ * - Dual SSE stream + fallback polling (never leaves screen blank)
+ * - Safe HTML5 Canvas rendering (cross-browser compatible roundRect fallback)
+ * - Interactive Toast notifications on all chaos actions
+ * - Real-time SLA monitoring and incident feedback
  */
 
 // Application State
@@ -15,38 +20,100 @@ const state = {
   zScores: {},
   latencyHistory: [], // array of { time: Date, p95: number, avg: number }
   errorHistory: [],   // array of { time: Date, errorRate: number }
-  maxHistoryPoints: 60
+  maxHistoryPoints: 60,
+  sseConnected: false
 };
 
-// --- SSE Real-time Subscription ---
+// --- Toast Notification System ---
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span>${type === 'success' ? '✓' : type === 'error' ? '⚠' : 'ℹ'}</span> <span>${message}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+    setTimeout(() => toast.remove(), 300);
+  }, 3500);
+}
+
+// --- Safe Cross-Browser Canvas Helper ---
+function safeRoundRect(ctx, x, y, w, h, r) {
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    // Fallback standard path
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+}
+
+// --- Data Synchronization (SSE + Polling Fallback) ---
 function initEventStream() {
   const statusDot = document.getElementById('connectionDot');
   const statusText = document.getElementById('connectionText');
 
-  const eventSource = new EventSource('/api/stream');
+  try {
+    const eventSource = new EventSource('/api/stream');
 
-  eventSource.onopen = () => {
-    statusDot.classList.remove('disconnected');
-    statusText.textContent = 'Live SSE Connected';
-  };
+    eventSource.onopen = () => {
+      state.sseConnected = true;
+      statusDot.classList.remove('disconnected');
+      statusText.textContent = 'Live SSE Connected';
+    };
 
-  eventSource.addEventListener('status', (e) => {
-    try {
-      const data = JSON.parse(e.data);
+    eventSource.addEventListener('status', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateDashboard(data);
+      } catch (err) {
+        console.error('Failed to parse SSE data', err);
+      }
+    });
+
+    eventSource.onerror = () => {
+      state.sseConnected = false;
+      statusDot.classList.add('disconnected');
+      statusText.textContent = 'Live Polling Active';
+    };
+  } catch (e) {
+    console.warn('EventSource not supported or blocked, relying on polling', e);
+  }
+}
+
+// Immediate fetch on load and fallback interval
+async function fetchStatusSnapshot() {
+  try {
+    const res = await fetch('/api/status');
+    if (res.ok) {
+      const data = await res.json();
       updateDashboard(data);
-    } catch (err) {
-      console.error('Failed to parse SSE data', err);
+      const statusDot = document.getElementById('connectionDot');
+      const statusText = document.getElementById('connectionText');
+      if (!state.sseConnected && statusDot && statusText) {
+        statusDot.classList.remove('disconnected');
+        statusText.textContent = 'Live Polling Active';
+      }
     }
-  });
-
-  eventSource.onerror = () => {
-    statusDot.classList.add('disconnected');
-    statusText.textContent = 'Reconnecting...';
-  };
+  } catch (err) {
+    console.warn('Status poll failed', err);
+  }
 }
 
 // --- Main State Update ---
 function updateDashboard(data) {
+  if (!data) return;
+
   state.mode = data.mode || state.mode;
   state.slo = data.slo || state.slo;
   state.services = data.services || state.services;
@@ -60,8 +127,8 @@ function updateDashboard(data) {
   const now = new Date();
   state.latencyHistory.push({
     time: now,
-    p95: state.slo.p95LatencyMs || 0,
-    avg: state.slo.avgLatencyMs || 0
+    p95: (state.slo && state.slo.p95LatencyMs) || 0,
+    avg: (state.slo && state.slo.avgLatencyMs) || 0
   });
   if (state.latencyHistory.length > state.maxHistoryPoints) {
     state.latencyHistory.shift();
@@ -69,48 +136,60 @@ function updateDashboard(data) {
 
   state.errorHistory.push({
     time: now,
-    errorRate: (state.slo.errorRate || 0) * 100
+    errorRate: ((state.slo && state.slo.errorRate) || 0) * 100
   });
   if (state.errorHistory.length > state.maxHistoryPoints) {
     state.errorHistory.shift();
   }
 
-  renderKpiCards();
-  renderModeToggle();
-  renderIncidentFeed();
-  renderQPolicyTable();
-  renderChaosActiveList();
-  renderTopology();
-  renderCharts();
+  try { renderKpiCards(); } catch (e) { console.error('Error in renderKpiCards', e); }
+  try { renderModeToggle(); } catch (e) { console.error('Error in renderModeToggle', e); }
+  try { renderIncidentFeed(); } catch (e) { console.error('Error in renderIncidentFeed', e); }
+  try { renderQPolicyTable(); } catch (e) { console.error('Error in renderQPolicyTable', e); }
+  try { renderChaosActiveList(); } catch (e) { console.error('Error in renderChaosActiveList', e); }
+  try { renderTopology(); } catch (e) { console.error('Error in renderTopology', e); }
+  try { renderCharts(); } catch (e) { console.error('Error in renderCharts', e); }
 }
 
 // --- KPI Cards Rendering ---
 function renderKpiCards() {
+  const slo = state.slo || { p95LatencyMs: 0, errorRate: 0, windowRequests: 0, sloHealthy: true };
+
   const sloBadge = document.getElementById('sloBadge');
-  const sloHealthy = state.slo.sloHealthy;
-  sloBadge.className = `badge ${sloHealthy ? 'badge-success' : 'badge-error'}`;
-  sloBadge.textContent = sloHealthy ? 'SLO HEALTHY' : 'SLO BREACHED';
+  if (sloBadge) {
+    const sloHealthy = slo.sloHealthy;
+    sloBadge.className = `badge ${sloHealthy ? 'badge-success' : 'badge-error'}`;
+    sloBadge.textContent = sloHealthy ? 'SLO HEALTHY' : 'SLO BREACHED';
+  }
 
   const p95El = document.getElementById('kpiP95');
-  p95El.textContent = `${Math.round(state.slo.p95LatencyMs)} ms`;
-  p95El.style.color = state.slo.p95LatencyMs > 400 ? 'var(--error)' : 'var(--text-primary)';
+  if (p95El) {
+    p95El.textContent = `${Math.round(slo.p95LatencyMs || 0)} ms`;
+    p95El.style.color = (slo.p95LatencyMs || 0) > 400 ? 'var(--error)' : 'var(--text-primary)';
+  }
 
   const errEl = document.getElementById('kpiErrorRate');
-  const errPct = (state.slo.errorRate * 100).toFixed(1);
-  errEl.textContent = `${errPct}%`;
-  errEl.style.color = state.slo.errorRate > 0.03 ? 'var(--error)' : 'var(--text-primary)';
+  if (errEl) {
+    const errPct = ((slo.errorRate || 0) * 100).toFixed(1);
+    errEl.textContent = `${errPct}%`;
+    errEl.style.color = (slo.errorRate || 0) > 0.03 ? 'var(--error)' : 'var(--text-primary)';
+  }
 
   const rpsEl = document.getElementById('kpiThroughput');
-  const rps = (state.slo.windowRequests / 10).toFixed(1);
-  rpsEl.textContent = `${rps} req/s`;
+  if (rpsEl) {
+    const rps = ((slo.windowRequests || 0) / 10).toFixed(1);
+    rpsEl.textContent = `${rps} req/s`;
+  }
 
   const incidentBadge = document.getElementById('incidentBadge');
-  if (state.activeIncident) {
-    incidentBadge.className = 'badge badge-warning';
-    incidentBadge.textContent = `ACTIVE (${state.activeIncident.status})`;
-  } else {
-    incidentBadge.className = 'badge badge-success';
-    incidentBadge.textContent = 'NO INCIDENT';
+  if (incidentBadge) {
+    if (state.activeIncident) {
+      incidentBadge.className = 'badge badge-warning';
+      incidentBadge.textContent = `ACTIVE (${state.activeIncident.status || 'HEALING'})`;
+    } else {
+      incidentBadge.className = 'badge badge-success';
+      incidentBadge.textContent = 'NO INCIDENT';
+    }
   }
 }
 
@@ -118,6 +197,7 @@ function renderKpiCards() {
 function renderModeToggle() {
   const btnProposed = document.getElementById('btnModeProposed');
   const btnBaseline = document.getElementById('btnModeBaseline');
+  if (!btnProposed || !btnBaseline) return;
 
   if (state.mode === 'PROPOSED') {
     btnProposed.classList.add('active');
@@ -134,15 +214,19 @@ window.setMode = async function (newMode) {
     if (res.ok) {
       state.mode = newMode;
       renderModeToggle();
+      showToast(`Operating mode switched to ${newMode}`, 'info');
+      fetchStatusSnapshot();
     }
   } catch (err) {
-    console.error('Failed to set mode', err);
+    showToast(`Failed to switch mode: ${err.message}`, 'error');
   }
 };
 
 // --- Incident Timeline Rendering ---
 function renderIncidentFeed() {
   const container = document.getElementById('incidentFeed');
+  if (!container) return;
+
   let html = '';
 
   if (state.activeIncident) {
@@ -157,27 +241,27 @@ function renderIncidentFeed() {
     html += `
       <div class="incident-item">
         <div class="incident-header">
-          <span style="font-weight:700; color:var(--error);">🚨 ACTIVE INCIDENT (${inc.mode})</span>
-          <span class="incident-time">${new Date(inc.startedAt).toLocaleTimeString()}</span>
+          <span style="font-weight:700; color:var(--error);">🚨 ACTIVE INCIDENT (${inc.mode || 'PROPOSED'})</span>
+          <span class="incident-time">${inc.startedAt ? new Date(inc.startedAt).toLocaleTimeString() : 'now'}</span>
         </div>
-        <div>${inc.triggerReason}</div>
+        <div>${inc.triggerReason || 'SLO violation'}</div>
         <div>Suspect: <b>${inc.targetEntity || 'Diagnosing...'}</b> [${inc.rootCauseType || ''}]</div>
         ${actionsHtml}
       </div>
     `;
   }
 
-  const history = [...state.incidentHistory].reverse().slice(0, 5);
+  const history = [...(state.incidentHistory || [])].reverse().slice(0, 5);
   for (const inc of history) {
     const isResolved = inc.status === 'RESOLVED';
     html += `
       <div class="incident-item ${isResolved ? 'resolved' : 'escalated'}">
         <div class="incident-header">
-          <span><b>${inc.status}</b> (${inc.mode})</span>
-          <span class="incident-time">${new Date(inc.startedAt).toLocaleTimeString()}</span>
+          <span><b>${inc.status || 'COMPLETED'}</b> (${inc.mode || ''})</span>
+          <span class="incident-time">${inc.startedAt ? new Date(inc.startedAt).toLocaleTimeString() : ''}</span>
         </div>
-        <div style="color:var(--text-secondary);">${inc.triggerReason}</div>
-        <div>Root Cause: <b>${inc.targetEntity}</b> (${inc.rootCauseType})</div>
+        <div style="color:var(--text-secondary);">${inc.triggerReason || ''}</div>
+        <div>Root Cause: <b>${inc.targetEntity || 'unknown'}</b> (${inc.rootCauseType || ''})</div>
       </div>
     `;
   }
@@ -194,20 +278,26 @@ function renderQPolicyTable() {
   const tbody = document.getElementById('qPolicyBody');
   if (!tbody) return;
 
+  if (!state.qPolicy || state.qPolicy.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color:var(--text-secondary);">Initializing Q-Policy table...</td></tr>`;
+    return;
+  }
+
   let html = '';
   for (const row of state.qPolicy) {
-    const scoreColor = row.qValue >= 0.8 ? 'var(--success)' : row.qValue <= 0.4 ? 'var(--error)' : 'var(--warning)';
+    const qVal = typeof row.qValue === 'number' ? row.qValue : 0.9;
+    const scoreColor = qVal >= 0.8 ? 'var(--success)' : qVal <= 0.4 ? 'var(--error)' : 'var(--warning)';
     html += `
       <tr>
         <td><code>${row.faultType}</code></td>
         <td><b>${row.actionName}</b></td>
         <td>
-          <span style="font-weight:700; color:${scoreColor};">${row.qValue.toFixed(3)}</span>
+          <span style="font-weight:700; color:${scoreColor};">${qVal.toFixed(3)}</span>
           <div style="width:60px; height:4px; background:#E5E7EB; border-radius:2px; display:inline-block; margin-left:6px; vertical-align:middle;">
-            <div style="width:${Math.round(row.qValue * 100)}%; height:100%; background:${scoreColor}; border-radius:2px;"></div>
+            <div style="width:${Math.min(100, Math.round(qVal * 100))}%; height:100%; background:${scoreColor}; border-radius:2px;"></div>
           </div>
         </td>
-        <td>${row.updateCount}</td>
+        <td>${row.updateCount || 0}</td>
       </tr>
     `;
   }
@@ -219,8 +309,8 @@ function renderChaosActiveList() {
   const container = document.getElementById('activeChaosList');
   if (!container) return;
 
-  if (state.chaosFaults.length === 0) {
-    container.innerHTML = `<span style="font-size:12px; color:var(--text-secondary);">No active link faults injected.</span>`;
+  if (!state.chaosFaults || state.chaosFaults.length === 0) {
+    container.innerHTML = `<span style="font-size:12px; color:var(--text-secondary);">No active faults injected. System in nominal state.</span>`;
     return;
   }
 
@@ -238,6 +328,7 @@ function renderChaosActiveList() {
 
 // --- Chaos Form Actions ---
 window.injectChaos = async function () {
+  const btn = document.getElementById('btnInjectChaos');
   const type = document.getElementById('chaosType').value;
   const target = document.getElementById('chaosTarget').value;
   const delay = document.getElementById('chaosDelay').value || 0;
@@ -252,6 +343,11 @@ window.injectChaos = async function () {
     }
   }
 
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Injecting...';
+  }
+
   try {
     const params = new URLSearchParams({
       type: type,
@@ -260,25 +356,61 @@ window.injectChaos = async function () {
       delayMs: delay,
       lossPct: loss
     });
-    await fetch(`/api/chaos/inject?${params.toString()}`, { method: 'POST' });
+    const res = await fetch(`/api/chaos/inject?${params.toString()}`, { method: 'POST' });
+    if (res.ok) {
+      showToast(`Injected ${type} on ${target} (+${delay}ms, ${loss}%)`, 'success');
+      await fetchStatusSnapshot();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast(`Injection failed: ${err.error || res.statusText}`, 'error');
+    }
   } catch (err) {
-    console.error('Failed to inject chaos', err);
+    showToast(`Error injecting fault: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Inject Fault';
+    }
   }
 };
 
 window.clearAllChaos = async function () {
+  const btn = document.getElementById('btnClearChaos');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Clearing...';
+  }
+
   try {
-    await fetch('/api/chaos/clear', { method: 'POST' });
+    const res = await fetch('/api/chaos/clear', { method: 'POST' });
+    if (res.ok) {
+      showToast('All chaos impairments cleared successfully!', 'success');
+      await fetchStatusSnapshot();
+    } else {
+      showToast('Failed to clear chaos', 'error');
+    }
   } catch (err) {
-    console.error('Failed to clear chaos', err);
+    showToast(`Error clearing chaos: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Clear All Chaos';
+    }
   }
 };
 
 window.restartService = async function (serviceName) {
+  showToast(`Initiating restart for ${serviceName}...`, 'info');
   try {
-    await fetch(`/api/service/${serviceName}/restart`, { method: 'POST' });
+    const res = await fetch(`/api/service/${serviceName}/restart`, { method: 'POST' });
+    if (res.ok) {
+      showToast(`Service ${serviceName} restarted successfully`, 'success');
+      fetchStatusSnapshot();
+    } else {
+      showToast(`Failed to restart ${serviceName}`, 'error');
+    }
   } catch (err) {
-    console.error('Failed to restart service', err);
+    showToast(`Error restarting ${serviceName}: ${err.message}`, 'error');
   }
 };
 
@@ -304,22 +436,22 @@ function renderTopology() {
   const canvas = document.getElementById('topologyCanvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+  if (!ctx) return;
 
-  // Handle high-DPI
-  const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-  }
-  ctx.resetTransform();
-  ctx.scale(dpr, dpr);
+  const w = rect.width || 700;
+  const h = rect.height || 360;
 
-  const w = rect.width;
-  const h = rect.height;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+
+  ctx.save();
+  ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
-  // Scale node positions to fit canvas
   const scaleX = w / 780;
   const scaleY = h / 380;
 
@@ -327,14 +459,15 @@ function renderTopology() {
   for (const edge of topologyEdges) {
     const fromNode = topologyNodes.find(n => n.id === edge.from);
     const toNode = topologyNodes.find(n => n.id === edge.to);
+    if (!fromNode || !toNode) continue;
 
     const x1 = fromNode.x * scaleX;
     const y1 = fromNode.y * scaleY;
     const x2 = toNode.x * scaleX;
     const y2 = toNode.y * scaleY;
 
-    // Check if this link has active chaos
-    const fault = state.chaosFaults.find(f => f.caller === edge.from && f.target === edge.to);
+    // Check active chaos on edge
+    const fault = (state.chaosFaults || []).find(f => f.caller === edge.from && f.target === edge.to);
 
     ctx.beginPath();
     ctx.moveTo(x1 + 45, y1);
@@ -369,15 +502,15 @@ function renderTopology() {
       const midX = (x1 + 45 + x2 - 50) / 2;
       const midY = (y1 + y2) / 2;
       ctx.fillStyle = '#FEE2E2';
-      ctx.fillRect(midX - 28, midY - 10, 56, 18);
+      ctx.fillRect(midX - 30, midY - 10, 60, 20);
       ctx.strokeStyle = '#D93025';
       ctx.lineWidth = 1;
-      ctx.strokeRect(midX - 28, midY - 10, 56, 18);
+      ctx.strokeRect(midX - 30, midY - 10, 60, 20);
       ctx.fillStyle = '#D93025';
-      ctx.font = 'bold 9px sans-serif';
+      ctx.font = 'bold 10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(`+${fault.delayMs}ms`, midX, midY - 1);
+      ctx.fillText(`+${fault.delayMs}ms`, midX, midY);
     }
   }
 
@@ -390,7 +523,7 @@ function renderTopology() {
     const rx = nx - nw / 2;
     const ry = ny - nh / 2;
 
-    const svc = state.services[node.id] || { state: 'DOWN', restartCount: 0 };
+    const svc = (state.services && state.services[node.id]) || { state: 'DOWN', restartCount: 0 };
     const isUp = svc.state === 'UP';
     const isRestarting = svc.state === 'RESTARTING';
 
@@ -406,20 +539,18 @@ function renderTopology() {
 
     // Node Box
     ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.roundRect(rx, ry, nw, nh, 6);
+    safeRoundRect(ctx, rx, ry, nw, nh, 6);
     ctx.fill();
 
     ctx.strokeStyle = borderColor;
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(rx, ry, nw, nh, 6);
+    safeRoundRect(ctx, rx, ry, nw, nh, 6);
     ctx.stroke();
 
     // Status Pill
-    ctx.fillStyle = isUp ? '#DCFCE7' : isRestarting ? '#FEF3C7' : '#FEE2E2';
+    ctx.fillStyle = isUp ? '#0A8754' : isRestarting ? '#F59E0B' : '#D93025';
     ctx.beginPath();
-    ctx.roundRect(rx + 6, ry + 6, 8, 8, 4);
+    ctx.arc(rx + 12, ry + 14, 4, 0, Math.PI * 2);
     ctx.fill();
 
     // Node Name
@@ -427,14 +558,16 @@ function renderTopology() {
     ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(node.name, rx + 20, ry + 12);
+    ctx.fillText(node.name, rx + 22, ry + 14);
 
     // Node Port & Info
     ctx.fillStyle = '#595959';
     ctx.font = '10px monospace';
-    ctx.fillText(`:${node.port} ${node.critical ? '• CRIT' : ''}`, rx + 8, ry + 28);
-    ctx.fillText(`Rst: ${svc.restartCount || 0}`, rx + 8, ry + 40);
+    ctx.fillText(`:${node.port} ${node.critical ? '• CRIT' : ''}`, rx + 8, ry + 30);
+    ctx.fillText(`Restarts: ${svc.restartCount || 0}`, rx + 8, ry + 42);
   }
+
+  ctx.restore();
 }
 
 // --- Real-Time Timeseries Canvas Charts ---
@@ -447,44 +580,53 @@ function renderLatencyChart() {
   const canvas = document.getElementById('latencyChartCanvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width || 400;
+  const h = rect.height || 120;
 
   const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
   }
-  ctx.resetTransform();
-  ctx.scale(dpr, dpr);
 
-  const w = rect.width;
-  const h = rect.height;
+  ctx.save();
+  ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
-  const history = state.latencyHistory;
-  if (history.length < 2) return;
+  const history = state.latencyHistory || [];
+  if (history.length < 2) {
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Accumulating latency samples...', w / 2, h / 2);
+    ctx.restore();
+    return;
+  }
 
-  const maxVal = Math.max(600, ...history.map(d => Math.max(d.p95, d.avg))) * 1.15;
+  const maxVal = Math.max(500, ...history.map(d => d.p95)) * 1.15;
   const padLeft = 40;
   const padBottom = 20;
   const chartW = w - padLeft - 10;
   const chartH = h - padBottom - 10;
 
-  // Grid & Labels
+  // Grid
   ctx.strokeStyle = '#E5E7EB';
   ctx.lineWidth = 1;
   ctx.fillStyle = '#94A3B8';
   ctx.font = '10px sans-serif';
   ctx.textAlign = 'right';
 
-  [0, 200, 400, 600].forEach(val => {
+  [0, 200, 400, Math.round(maxVal)].forEach(val => {
     if (val <= maxVal) {
       const y = 10 + chartH - (val / maxVal) * chartH;
       ctx.beginPath();
       ctx.moveTo(padLeft, y);
       ctx.lineTo(w - 10, y);
       ctx.stroke();
-      ctx.fillText(`${val}ms`, padLeft - 4, y + 3);
+      ctx.fillText(`${val}`, padLeft - 4, y + 3);
     }
   });
 
@@ -510,28 +652,39 @@ function renderLatencyChart() {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+
+  ctx.restore();
 }
 
 function renderErrorChart() {
   const canvas = document.getElementById('errorChartCanvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width || 400;
+  const h = rect.height || 120;
 
   const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
   }
-  ctx.resetTransform();
-  ctx.scale(dpr, dpr);
 
-  const w = rect.width;
-  const h = rect.height;
+  ctx.save();
+  ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
 
-  const history = state.errorHistory;
-  if (history.length < 2) return;
+  const history = state.errorHistory || [];
+  if (history.length < 2) {
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Accumulating error samples...', w / 2, h / 2);
+    ctx.restore();
+    return;
+  }
 
   const maxVal = Math.max(10, ...history.map(d => d.errorRate)) * 1.2;
   const padLeft = 40;
@@ -579,11 +732,22 @@ function renderErrorChart() {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+
+  ctx.restore();
 }
 
 // Window load init
 window.addEventListener('DOMContentLoaded', () => {
+  // 1. Immediately fetch status snapshot
+  fetchStatusSnapshot();
+
+  // 2. Start SSE real-time listener
   initEventStream();
+
+  // 3. Fallback polling every 2s in case SSE is blocked or buffering
+  setInterval(fetchStatusSnapshot, 2000);
+
+  // 4. Handle resize
   window.addEventListener('resize', () => {
     renderTopology();
     renderCharts();
